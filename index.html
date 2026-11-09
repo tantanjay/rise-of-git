@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>🏰 Rise of Git — 3D Gamified Git World</title>
+  <link rel="icon" type="image/svg+xml" href="./favicon.svg" />
+  <link rel="alternate icon" type="image/x-icon" href="./favicon.ico" />
+  <script>
+    (function () {
+      var isSubpath = window.location.pathname.startsWith('/castle');
+      var base = isSubpath ? '/castle/' : '/';
+      var svg = document.querySelector('link[type="image/svg+xml"]');
+      var ico = document.querySelector('link[rel="alternate icon"]');
+      if (svg) svg.href = base + 'favicon.svg?v=2';
+      if (ico) ico.href = base + 'favicon.ico?v=2';
+    })();
+  </script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=MedievalSharp&family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+</head>
+<body class="bg-slate-950 text-slate-100 antialiased overflow-hidden">
+  <div id="root"></div>
+  <script type="module" src="/src/main.tsx"></script>
+</body>
+</html>

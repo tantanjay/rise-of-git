@@ -1,0 +1,61 @@
+{
+  "name": "git-tea-castle",
+  "version": "2.0.0",
+  "description": "3D Gamified Git World built with TypeScript, React Three Fiber, Three.js, Tailwind CSS and Express",
+  "license": "AGPL-3.0-only",
+  "type": "module",
+  "scripts": {
+    "server": "tsx watch --clear-screen=false server/src/index.ts",
+    "dev:client": "vite",
+    "dev": "concurrently \"tsx watch --clear-screen=false server/src/index.ts\" \"vite\"",
+    "build": "vite build",
+    "check:models": "tsx scripts/check-models.ts",
+    "lint": "eslint src server/src scripts && tsc -p tsconfig.json --noEmit && tsc -p tsconfig.server.json --noEmit",
+    "start": "tsx server/src/index.ts",
+    "sim:war": "tsx scripts/sim-war.ts",
+    "sim:gates": "tsx scripts/sim-gates.ts",
+    "sim:population": "tsx scripts/sim-population.ts",
+    "sim:balance": "tsx scripts/sim-balance.ts",
+    "sim:arts": "tsx scripts/sim-arts.ts",
+    "disaster": "tsx scripts/call-disaster.ts",
+    "sim:leaderboard": "tsx scripts/sim-leaderboard.ts",
+    "sim:scouting": "tsx scripts/sim-scouting.ts",
+    "backfill:leaderboard": "tsx scripts/backfill-leaderboard.ts"
+  },
+  "dependencies": {
+    "@react-three/drei": "^10.7.9",
+    "@react-three/fiber": "^9.8.2",
+    "better-sqlite3": "^13.0.3",
+    "cors": "^2.8.5",
+    "express": "^5.3.0",
+    "lucide-react": "^1.57.0",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
+    "three": "^0.186.1",
+    "tsx": "^4.23.15"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@tailwindcss/postcss": "^4.3.3",
+    "@types/better-sqlite3": "^9.6.0",
+    "@types/cors": "^2.8.19",
+    "@types/express": "^5.0.6",
+    "@types/node": "^26.6.5",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@types/three": "^0.186.0",
+    "@vitejs/plugin-react": "^6.1.2",
+    "concurrently": "^10.0.6",
+    "eslint": "^10.12.0",
+    "eslint-plugin-react-hooks": "^7.1.1",
+    "postcss": "^8.5.30",
+    "tailwindcss": "^4.3.3",
+    "typescript": "~5.8.2",
+    "typescript-eslint": "^8.71.2",
+    "vite": "^8.3.4"
+  },
+  "allowScripts": {
+    "better-sqlite3@13.0.3": true,
+    "esbuild@0.28.2": true
+  }
+}

@@ -1,0 +1,59 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="64" y2="64" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#0f172a"/>
+      <stop offset="100%" stop-color="#020617"/>
+    </linearGradient>
+    <linearGradient id="castle" x1="12" y1="12" x2="52" y2="56" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#38bdf8"/>
+      <stop offset="40%" stop-color="#6366f1"/>
+      <stop offset="100%" stop-color="#4f46e5"/>
+    </linearGradient>
+    <linearGradient id="gold" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#fbbf24"/>
+      <stop offset="100%" stop-color="#d97706"/>
+    </linearGradient>
+    <filter id="glow" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="2" result="blur"/>
+      <feComposite in="SourceGraphic" in2="blur" operator="over"/>
+    </filter>
+  </defs>
+
+  <!-- Rounded App Tile -->
+  <rect width="64" height="64" rx="14" fill="url(#bg)"/>
+  <rect x="1" y="1" width="62" height="62" rx="13" stroke="#334155" stroke-width="1.5" stroke-opacity="0.6"/>
+
+  <!-- Golden Ring/Crest -->
+  <circle cx="32" cy="34" r="23" stroke="#f59e0b" stroke-opacity="0.25" stroke-width="1.5" stroke-dasharray="3 3"/>
+
+  <!-- Castle Towers & Walls -->
+  <!-- Left Tower -->
+  <path d="M14 26H22V48H14V26Z" fill="url(#castle)"/>
+  <path d="M13 22H16V26H13V22ZM17 22H19V26H17V22ZM20 22H23V26H20V22Z" fill="url(#castle)"/>
+
+  <!-- Right Tower -->
+  <path d="M42 26H50V48H42V26Z" fill="url(#castle)"/>
+  <path d="M41 22H44V26H41V22ZM45 22H47V26H45V22ZM48 22H51V26H48V22Z" fill="url(#castle)"/>
+
+  <!-- Main Wall / Great Keep -->
+  <path d="M22 30H42V48H22V30Z" fill="url(#castle)"/>
+  <!-- Central Tower -->
+  <path d="M26 18H38V30H26V18Z" fill="url(#castle)"/>
+  <path d="M25 14H28V18H25V14ZM30 14H34V18H30V14ZM36 14H39V18H36V14Z" fill="url(#castle)"/>
+
+  <!-- Central Spire & Flag (Git theme) -->
+  <path d="M32 6V14" stroke="url(#gold)" stroke-width="2" stroke-linecap="round"/>
+  <path d="M32 7L40 10L32 13V7Z" fill="url(#gold)"/>
+
+  <!-- Arched Gate -->
+  <path d="M28 48V40C28 37.79 29.79 36 32 36C34.21 36 36 37.79 36 40V48H28Z" fill="#090d16"/>
+  <path d="M32 37V48M29 42H35" stroke="#f59e0b" stroke-opacity="0.4" stroke-width="1"/>
+
+  <!-- Glowing Windows -->
+  <rect x="17" y="32" width="2.5" height="4.5" rx="1.25" fill="#fde047" filter="url(#glow)"/>
+  <rect x="44.5" y="32" width="2.5" height="4.5" rx="1.25" fill="#fde047" filter="url(#glow)"/>
+  <rect x="30.75" y="22" width="2.5" height="4.5" rx="1.25" fill="#fde047" filter="url(#glow)"/>
+
+  <!-- Castle Base Foundation -->
+  <path d="M12 48H52V52H12V48Z" fill="#1e293b"/>
+</svg>
