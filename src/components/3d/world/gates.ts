@@ -1,6 +1,7 @@
 import { Builder, IDLE_KIND, Surface } from "@/components/3d/city/parts";
 import { Add, AddOpts, V3, along, arc, lanternFrame, skull } from "./kitParts";
 import { FigureLook, faceAt } from "./spawnModels";
+import { PROVINCE_OFFSET as P } from "@/utils/worldGeometry";
 
 /*
  * The four frontier gates, one on the road into each mortal province, each built in its civilization's style:
@@ -14,7 +15,7 @@ export const GATE_MODEL_TYPES = new Set(["gate-human", "gate-orc", "gate-elf", "
 /* ------------------------------ the border walls ------------------------------ */
 
 /** Heart of each mortal province (mirrors PROVINCE_CONFIG on the server) */
-const PROVINCE_HEART: Record<string, [number, number]> = { human: [-44, 44], elf: [-44, -44], dwarf: [44, -44], orc: [44, 44] };
+const PROVINCE_HEART: Record<string, [number, number]> = { human: [-P, P], elf: [-P, -P], dwarf: [P, -P], orc: [P, P] };
 /** The wall runs this far (radians) either side of the gate, curving round the province's heart */
 export const GATE_WALL_SPAN = 0.42;
 /** Gap left in the wall for the gatehouse itself */

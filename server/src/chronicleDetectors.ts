@@ -184,12 +184,14 @@ export const SOLO_KILL_SHARE = 0.6;
 
 /** 🐉 Boss kills: a solo kill (≥60% of the damage), a stolen kill (the killer wasn't the top dealer), or a plain one */
 export const bossKills: Detector = (w) =>
-  eventsIn<{ bossName: string; killerName: string; rally?: boolean; dealers?: Array<{ userId: string; name: string; damage: number }>; totalDamage?: number }>(w, "boss_slain").map((e) => {
+  eventsIn<{ bossName: string; killerName: string; rally?: boolean; dealers?: Array<{ userId: string; name: string; damage: number }>; dealerCount?: number; totalDamage?: number }>(w, "boss_slain").filter((e) => !e.targetId?.startsWith("horror-")).map((e) => {
     const p = e.payload;
     const dealers = [...(p.dealers ?? [])].sort((a, b) => b.damage - a.damage);
     const total = p.totalDamage ?? dealers.reduce((s, d) => s + d.damage, 0);
     const top = dealers[0];
     const killer = dealers.find((d) => d.userId === e.actorId);
+    // The event keeps the top 10 dealers; how many wounded it in all is kept beside them (older events: the list)
+    const wounded = Math.max(dealers.length, p.dealerCount ?? 0);
     if (top && top.userId !== e.actorId) {
       const diff = top.damage - (killer?.damage ?? 0);
       return {
@@ -200,17 +202,17 @@ export const bossKills: Detector = (w) =>
       };
     }
     if (top && top.damage >= SOLO_KILL_SHARE * total) {
-      const alone = dealers.length <= 1;
+      const alone = wounded <= 1;
       return {
         kind: "boss_solo", label: "Solo kill",
         emblem: "🐉",
         weight: 72,
         text: alone
           ? `${p.killerName} slew ${p.bossName} alone; no other blade touched it.`
-          : `${p.killerName} slew ${p.bossName} almost alone, dealing ${pct(top.damage, total)}% of its wounds while ${dealers.length - 1} ${dealers.length === 2 ? "other" : "others"} fought beside them.`
+          : `${p.killerName} slew ${p.bossName} almost alone, dealing ${pct(top.damage, total)}% of its wounds while ${wounded - 1} ${wounded === 2 ? "other" : "others"} fought beside them.`
       };
     }
-    return { kind: "boss_slain", label: "Boss slain", emblem: "🐉", weight: 45, text: `${p.bossName} fell to ${p.killerName}'s ${p.rally ? "rally" : "army"}, after ${dealers.length} rulers had wounded it.` };
+    return { kind: "boss_slain", label: "Boss slain", emblem: "🐉", weight: 45, text: `${p.bossName} fell to ${p.killerName}'s ${p.rally ? "rally" : "army"}, after ${wounded} rulers had wounded it.` };
   });
 
 /* ------------------------------------------------------------------------- */
@@ -264,6 +266,22 @@ export const castlesBurned: Detector = (w) => {
     .filter((r) => r.report.defenderBurning && !seen.has(r.defender_id) && seen.add(r.defender_id))
     .map((r) => ({ kind: "castle_burned", label: "Castle burned", emblem: "🔥", weight: 58, text: `${r.defender_name}'s castle burned after ${r.attacker_name}'s assault; no army could touch it again until its walls were mended.` }));
 };
+
+/** 🌑 Xal'Vorath: driven back by a kingdom's work, slain at the gates, or left to burn the city */
+export const horrorEnds: Detector = (w) => [
+  ...eventsIn<{ targetName: string; level: number }>(w, "horror_repelled").map((e) => ({
+    kind: "horror_repelled", label: "Horror repelled", emblem: "🌑", weight: 92,
+    text: `The Overseers loosed Xal'Vorath on ${e.payload.targetName}'s kingdom, and it crawled three days to the gates only to find a kingdom that had not once laid down its tools. It came apart on the wind, driven back by nothing but diligence.`
+  })),
+  ...eventsIn<{ targetName: string; level: number; killerName: string; topName: string; dealers: number }>(w, "horror_slain").map((e) => ({
+    kind: "horror_slain", label: "Horror slain", emblem: "🌑", weight: 100,
+    text: `Xal'Vorath stood at the gates of ${e.payload.targetName}'s kingdom and did not leave them. ${e.payload.killerName}'s host struck the last blow; ${e.payload.topName}, who had wounded it most, carried off the Heart of the Void.`
+  })),
+  ...eventsIn<{ targetName: string; level: number }>(w, "horror_burned").map((e) => ({
+    kind: "horror_burned", label: "Horror burned a kingdom", emblem: "🌑", weight: 96,
+    text: `No host could bring Xal'Vorath down within the hour. It tore down the walls of ${e.payload.targetName}'s kingdom, fed on the treasury and sank back into the rift while the city burned.`
+  }))
+];
 
 /** 🔄 A comeback: a ruler beaten by another earlier in the week who later beat them */
 export const comebacks: Detector = (w) => {
@@ -429,6 +447,7 @@ export const DETECTORS: Array<{ id: string; detect: Detector }> = [
   { id: "voidrift_falls", detect: voidriftFalls },
   { id: "rare_finds", detect: rareFinds },
   { id: "boss_kills", detect: bossKills },
+  { id: "horror", detect: horrorEnds },
   { id: "biggest_siege", detect: biggestSiege },
   { id: "longest_defence", detect: longestDefence },
   { id: "castles_burned", detect: castlesBurned },
@@ -461,14 +480,33 @@ const LINES_PER_STONE = 10;
 
 /** The week's work per civilization, and the most tireless ruler, as legend lines */
 export function realmLabour(w: ChronicleWeek): string[] {
-  const rows = db
-    .prepare(`
-      SELECT u.civilization AS civ, COUNT(*) AS works, SUM(COALESCE(c.meaningful_lines, c.lines_added, 0)) AS lines, COUNT(DISTINCT u.id) AS hands
-      FROM commits c JOIN users u ON (u.id = c.author_login OR lower(u.username) = lower(c.author_login))
-      WHERE datetime(c.committed_at) >= datetime(?) AND datetime(c.committed_at) < datetime(?)
-      GROUP BY u.civilization ORDER BY works DESC
-    `)
-    .all(w.fromIso, w.toIso) as Array<{ civ: CivilizationType; works: number; lines: number; hands: number }>;
+  // Each commit goes to one ruler, as the realm credits it: by login, or else (when no developer holds it by login)
+  // by one of the ruler's emails, unless an admin matched that email per repo
+  const users = db.prepare(`SELECT id, username, email, civilization FROM users`).all() as Array<{ id: string; username: string | null; email: string | null; civilization: CivilizationType | null }>;
+  const byId = new Map(users.map((u) => [u.id, u]));
+  const byUsername = new Map(users.filter((u) => u.username).map((u) => [u.username!.toLowerCase(), u]));
+  const byEmail = new Map<string, (typeof users)[number]>();
+  for (const u of users) if (u.email) byEmail.set(u.email.toLowerCase(), u);
+  for (const e of db.prepare(`SELECT email, user_id FROM user_emails`).all() as Array<{ email: string; user_id: string }>) {
+    const u = byId.get(e.user_id);
+    if (u) byEmail.set(e.email.toLowerCase(), u);
+  }
+  const repoMatched = new Set((db.prepare(`SELECT email, repo_id FROM repo_emails`).all() as Array<{ email: string; repo_id: string }>).map((r) => `${r.email.toLowerCase()}|${r.repo_id}`));
+  const commits = db
+    .prepare(`SELECT repo_id, author_login, author_email, COALESCE(meaningful_lines, lines_added, 0) AS lines FROM commits WHERE datetime(committed_at) >= datetime(?) AND datetime(committed_at) < datetime(?)`)
+    .all(w.fromIso, w.toIso) as Array<{ repo_id: string; author_login: string | null; author_email: string | null; lines: number }>;
+  const byCiv = new Map<CivilizationType, { works: number; lines: number; hands: Set<string> }>();
+  for (const c of commits) {
+    let u = c.author_login ? byId.get(c.author_login) ?? byUsername.get(c.author_login.toLowerCase()) : undefined;
+    if (!u && c.author_email && !repoMatched.has(`${c.author_email.toLowerCase()}|${c.repo_id}`)) u = byEmail.get(c.author_email.toLowerCase());
+    if (!u?.civilization) continue;
+    const t = byCiv.get(u.civilization) ?? { works: 0, lines: 0, hands: new Set<string>() };
+    t.works += 1;
+    t.lines += c.lines ?? 0;
+    t.hands.add(u.id);
+    byCiv.set(u.civilization, t);
+  }
+  const rows = [...byCiv].map(([civ, t]) => ({ civ, works: t.works, lines: t.lines, hands: t.hands.size })).sort((a, b) => b.works - a.works);
   const lines = rows.filter((r) => LABOUR_TOLD[r.civ]).map((r) => LABOUR_TOLD[r.civ](r.works, Math.max(1, Math.round((r.lines ?? 0) / LINES_PER_STONE)), r.hands));
   const tireless = db
     .prepare(`SELECT user_id, SUM(active) AS days FROM dev_daily_stats WHERE day >= ? AND day < ? GROUP BY user_id HAVING days >= 5 ORDER BY days DESC, SUM(xp) DESC LIMIT 1`)

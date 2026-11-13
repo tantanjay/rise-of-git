@@ -10,6 +10,13 @@
  */
 import type { CivilizationType } from "./types.js";
 
+/** The week running now: Sunday 00:00 UTC → next Sunday 00:00 UTC (the boss rotation, Overseer's Resolve, War Frenzy, Wrath) */
+export function weekWindow(now = Date.now()): { weekKey: string; startsAt: number; resetsAt: number } {
+  const d = new Date(now);
+  const startsAt = Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() - d.getUTCDay(), 0, 0, 0, 0);
+  return { weekKey: new Date(startsAt).toISOString().slice(0, 10), startsAt, resetsAt: startsAt + WEEK_MS };
+}
+
 /* ------------------------------------------------------------------------- */
 /* Day and night                                                              */
 /* ------------------------------------------------------------------------- */

@@ -21,7 +21,19 @@
   <link href="https://fonts.googleapis.com/css2?family=MedievalSharp&family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
 </head>
 <body class="bg-slate-950 text-slate-100 antialiased overflow-hidden">
-  <div id="root"></div>
+  <!-- Shown while the game's code downloads (React replaces it): the same look as the in-game loading screen -->
+  <div id="root">
+    <style>
+      @keyframes bootSpin { to { transform: rotate(360deg); } }
+      .boot-splash { position: fixed; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 20px; background: #020617 radial-gradient(ellipse at 50% 45%, rgba(217,119,6,0.18), rgba(15,23,42,0) 55%); }
+      .boot-ring { width: 96px; height: 96px; border-radius: 50%; border: 2px solid rgba(245,158,11,0.15); border-top-color: #fbbf24; animation: bootSpin 1.6s linear infinite; }
+      .boot-title { font-family: MedievalSharp, cursive, serif; font-size: 30px; letter-spacing: 0.03em; color: #fde68a; margin: 0; }
+    </style>
+    <div class="boot-splash" role="status" aria-label="Loading Rise of Git">
+      <div class="boot-ring"></div>
+      <p class="boot-title">Rise of Git</p>
+    </div>
+  </div>
   <script type="module" src="/src/main.tsx"></script>
 </body>
 </html>

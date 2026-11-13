@@ -105,6 +105,7 @@ const TABS = [
   { id: "armory", label: "The Armory", icon: "🗡️" },
   { id: "champions", label: "Champions", icon: "🦸" },
   { id: "folk", label: "Folk & Beasts", icon: "🧑‍🌾" },
+  { id: "legends", label: "Wandering Legends", icon: "🛒" },
   { id: "voidgate", label: "Void Gate", icon: "🌀" },
   { id: "castles", label: "Castles", icon: "🏰" },
   { id: "buildings", label: "Buildings", icon: "🏘️" },
@@ -117,7 +118,7 @@ type TabId = (typeof TABS)[number]["id"];
 /** The Codex's top tabs; each holds one or more of the tabs above (the Game Guide holds none) */
 const SECTIONS: Array<{ id: string; label: string; icon: string; blurb: string; tabs: TabId[] }> = [
   { id: "guide", label: "Game Guide", icon: "📖", blurb: "How the realm works, chapter by chapter, and the legends behind each civilization", tabs: [] },
-  { id: "creatures", label: "Creatures", icon: "🐺", blurb: "Every boss, monster, bandit, mercenary and champion, with where it roams and how rare it is, and the townsfolk and animals that live in the realm", tabs: ["bosses", "monsters", "bandits", "mercenaries", "armory", "champions", "folk", "voidgate"] },
+  { id: "creatures", label: "Creatures", icon: "🐺", blurb: "Every boss, monster, bandit, mercenary and champion, with where it roams and how rare it is, the townsfolk and animals that live in the realm, and the legends who wander its roads", tabs: ["bosses", "monsters", "bandits", "mercenaries", "armory", "champions", "folk", "legends", "voidgate"] },
   { id: "world", label: "World", icon: "🗺️", blurb: "The landmarks, frontier gates, free realms, wild sights, resource nodes and treasure caches of the world map", tabs: ["landmarks", "gates", "realms", "wilds", "resources", "treasures"] },
   { id: "structures", label: "Structures", icon: "🏰", blurb: "Every castle stage, every district's buildings tier by tier, and every improvement tier with its cost", tabs: ["castles", "buildings", "improvements"] },
   { id: "music", label: "Music & Sounds", icon: "🎵", blurb: "Each civilization's soundtracks, and every sound the game plays", tabs: ["soundtrack", "sounds"] },
@@ -163,12 +164,14 @@ const MORTAL_STAGES = CASTLE_STAGES.slice(0, EMPYREAN_STAGE);
 
 /** Frontier gates are kingdom NPCs on the map, but get a tab of their own */
 const isGate = (e: CodexEntry) => e.category === "kingdom" && e.type.startsWith("gate-");
-/** The Void Gate lives in its own tab (Creatures → Void Gate), not with the landmarks, until it stands on the map */
-const tabOf = (e: CodexEntry): TabId => (e.type === VOID_GATE_TYPE ? "voidgate" : isGate(e) ? "gates" : CATEGORY_TAB[e.category]);
+/** The Void Gate lives in its own tab (Creatures → Void Gate), not with the landmarks, until it stands on the map;
+ * the wandering legends in theirs (Creatures → Wandering Legends) */
+const isLegendEntry = (e: CodexEntry) => e.type.startsWith("legend-");
+const tabOf = (e: CodexEntry): TabId => (e.type === VOID_GATE_TYPE ? "voidgate" : isGate(e) ? "gates" : isLegendEntry(e) ? "legends" : CATEGORY_TAB[e.category]);
 
 function npcItem(e: CodexEntry): Item {
   const facts: Array<[string, string]> = [
-    ["Type", isGate(e) ? "Frontier gate" : CATEGORY_LABEL[e.category]],
+    ["Type", isGate(e) ? "Frontier gate" : isLegendEntry(e) ? "Wandering legend" : CATEGORY_LABEL[e.category]],
     ["Found in", e.spawn]
   ];
   if (e.chance !== undefined) {

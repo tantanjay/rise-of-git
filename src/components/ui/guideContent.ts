@@ -2,6 +2,8 @@ import { CivilizationType, NPCRarity, SCARCE_RESOURCES } from "@/types";
 import type { Preview } from "./CodexPreview";
 import { CASTLE_STAGES, EMPYREAN_STAGE, RED_STAR_FROM, WONDER_STAGE } from "@/utils/castle";
 import { CHRONICLE } from "@/utils/chronicle";
+import { FOOTPRINT, FOOTPRINT_MARGIN, RIM_AREAS, VOIDRIFT_SIZE, WILD_FRAME, WORLD_SCALE, WORLD_SIZE, ZONE_HALF } from "@/utils/worldGeometry";
+import { HORROR, HORROR_GEM, HORROR_LEVELS } from "@/utils/horror";
 import {
   BATTLE_ROUND_MS,
   CIV_DEMOGRAPHICS,
@@ -37,6 +39,8 @@ import {
   CALL_TO_ARMS_MS,
   festivalCostFor,
   WALL_BURN_THRESHOLD,
+  WALL_BURN_REPAIR_HOURS,
+  WALL_UNBURN_SHARE,
   WALL_DEF_MULT,
   WALL_DAMAGE_TAKEN_MULT
 } from "@/utils/civDemographics";
@@ -47,7 +51,7 @@ import { DISASTERS, DISASTER_EFFECTS, DISASTER_KINDS, DISASTER_SCHEDULE } from "
 import { REALM_CYCLE_DAYS, REALM_STAGES, REALM_STAGE_DAYS, REALM_STAGE_LEVELS } from "@/components/3d/world/realmTypes";
 import { DEED_RULES } from "@/utils/scriptoriumApi";
 import { AFTERMATH_LOOKS } from "@/utils/spellFx";
-import { BATTLE_ROUNDS, BOSS_KIT_SIZE, BOSS_PARALYZE_MULT, FINALE_LAST_STAND, KIT_SIZES, RALLY_BATTLE_ROUNDS, STATUS_MAX_SOURCES, STATUS_RULES, UnitRarity } from "@/utils/battleArts";
+import { BATTLE_ROUNDS, BOSS_FREEZE_CHILL, BOSS_KIT_SIZE, BOSS_PARALYZE_MULT, FINALE_LAST_STAND, KIT_SIZES, RALLY_BATTLE_ROUNDS, STATUS_MAX_SOURCES, STATUS_RULES, UnitRarity } from "@/utils/battleArts";
 import { BAND_BOSS_DAMAGE, BATTLE_PAY, HEAL_PRICE_SHARE, MERC_RARITIES, MERC_RULES, bandCapForSlots, battlePayFor, costText, mercDurationText } from "@/utils/mercenaries";
 import { ARMORY_RARITIES, ARMORY_RULES, ARMORY_SETS, ARMORY_TARGET_SHARE, EPIC_GEM, setText } from "@/utils/armory";
 import { MUSTER_SPLITS } from "@/utils/muster";
@@ -196,6 +200,18 @@ export const GUIDE_CHAPTERS: GuideChapter[] = [
       {
         heading: "Five civilizations",
         body: "Rulers are spread over four mortal civilizations (Humans, Elves, Dwarves, Orcs), each in its own province. The fifth, Nethergarde, rules the Voidrift at the centre of the map and is entered only by conquest."
+      },
+      {
+        heading: "🌾 The map and its Wild Rim",
+        body: `Every province, buffer zone and strip of the frontier has ${Math.round((WORLD_SCALE ** 2 - 1) * 100)}% more ground than the first map, and round all of them runs the Wild Rim, ${WILD_FRAME} units deep on every side and round the corners: each stretch the region beside it gone wild, sparser and rockier, before the coast. Resource nodes and roving packs spread out there when the zones fill up; castles, free realms, bosses and landmarks never stand on it. Nothing on the map stands on anything else: every kind of thing has its own patch of ground, and a spawn with no room is skipped, never piled on another.`,
+        facts: [
+          ["Board", `${WORLD_SIZE} units across; the zones end ${ZONE_HALF} out`],
+          ["Wild Rim", `${RIM_AREAS.length} stretches (4 sides, 4 corners), ${WILD_FRAME} units deep: nodes and packs, no one's safe territory`],
+          ["Spacing", `Two things stand at least their footprints + ${FOOTPRINT_MARGIN} apart: castle ${FOOTPRINT.castle}, boss ${FOOTPRINT.boss}, landmark ${FOOTPRINT.landmark}, node ${FOOTPRINT.resource}, common pack ${FOOTPRINT.encounter.common}`],
+          ["Marches", `Armies move ${WORLD_SCALE.toFixed(3)}× faster to match, so every road takes as long as it did`],
+          ["Voidrift", `${VOIDRIFT_SIZE} units across: its castles on a tight ring round the Core, its open outer band for packs, nodes and the titan`],
+          ["🌀 Void Gate", "Stands south of the Core, its climb coming soon: click it on the map"]
+        ]
       }
     ]
   },
@@ -279,7 +295,7 @@ export const GUIDE_CHAPTERS: GuideChapter[] = [
           ["Standing", `${EPICS_PER_REGION} of ${POOL_SIZE} per region`],
           ["Changes", "Every Sunday, 00:00 UTC"],
           ["Rotation day", "24 h: the old one 🏚️ crumbles, the new one 🏗️ rises"],
-          ["Spacing", "16 from other landmarks, 14 from castles, bosses and the day's nodes"],
+          ["Spacing", `Clear of every landmark, castle, boss, realm and the day's nodes by both footprints + ${FOOTPRINT_MARGIN} (a landmark covers ${FOOTPRINT.landmark})`],
           ["Royal Codex", "Shows all six of each region, the standing one marked"]
         ]
       },
@@ -345,8 +361,8 @@ export const GUIDE_CHAPTERS: GuideChapter[] = [
         body: `A meeting, research, support duty, a deployment, a review outside Git: log it on one of your repos with a title, a short report and an XP claim. The first ${DEED_RULES.autoSeal} XP of a day seal at once and raise the building; past that an Admin, Special Overseer or the Archon seals or rejects it, and you hear it from the herald. Nobody seals their own.`,
         facts: [
           ["XP per deed", DEED_RULES.choices.map((c) => c.toFixed(1)).join(" · ")],
-          ["Daily cap", `${DEED_RULES.dailyCap} XP a day (pending counts, rejected frees it)`],
-          ["Sealed at once", `The first ${DEED_RULES.autoSeal} XP of the day`],
+          ["Daily cap", `${DEED_RULES.dailyCap} XP a day (pending and revoked count, rejected frees it)`],
+          ["Sealed at once", `The first ${DEED_RULES.autoSeal} XP of the day (a revoked deed's place isn't sealed at once again)`],
           ["Days", "Today or yesterday"],
           ["Pays", "Building and castle levels, and the harvest, like commit XP"]
         ]
@@ -387,7 +403,7 @@ export const GUIDE_CHAPTERS: GuideChapter[] = [
       {
         body: `Early each week the Crown publishes the story of last week (Sunday to Sunday). It reaches every ruler as a herald notice, a 📖 banner shows its title for ${CHRONICLE.BANNER_DAYS} days, and it is kept in the Royal Codex under 📜 Chronicles, chapter after chapter, so the saga goes on.`,
         facts: [
-          ["Told", "Voidrift slots taken and thrones lost, the ruler who kept attacking until the rift gave way, legendary finds, boss kills, the greatest siege, the longest defence, castles burned, comebacks, titles, civilization swaps, deeds sealed, disasters weathered"],
+          ["Told", "Voidrift slots taken and thrones lost, the ruler who kept attacking until the rift gave way, legendary finds, boss kills, Xal'Vorath driven back, slain or left to burn a city, the greatest siege, the longest defence, castles burned, comebacks, titles, civilization swaps, deeds sealed, disasters weathered"],
           ["Solo kill", `you dealt ${pct(CHRONICLE.SOLO_KILL_SHARE)} or more of a boss's wounds and struck the last blow`],
           ["Stolen kill", "someone else struck the last blow on a boss you wounded most"],
           ["Persistence", `${CHRONICLE.PERSISTENCE_MIN_ATTEMPTS}+ assaults on the Voidrift before one won through`],
@@ -767,7 +783,7 @@ export const GUIDE_CHAPTERS: GuideChapter[] = [
         body: "Damage = soldiers × ATK × (1 − armour) with a ±15% roll, where armour = DEF ÷ (DEF + 20). The defender strikes back at the earliest-arrived army first.",
         facts: [
           ["Walls", `DEF ${x(WALL_DEF_MULT[0])} (fence) … ${x(WALL_DEF_MULT[5])}; damage taken ${pct(WALL_DAMAGE_TAKEN_MULT[0])} … ${pct(WALL_DAMAGE_TAKEN_MULT[5])}`],
-          ["Burning", `At ≤ ${pct(WALL_BURN_THRESHOLD)} wall HP the city catches fire: it can't be attacked or attack until it repairs (~8 h). Its castle burns on the map, and inside the walls, houses and town hall are alight`],
+          ["Burning", `At ≤ ${pct(WALL_BURN_THRESHOLD)} wall HP the city catches fire: it can't be attacked or attack until its walls repair to ${pct(WALL_UNBURN_SHARE)}: up to ${WALL_BURN_REPAIR_HOURS} h from 0%, less the higher they stood. Its castle burns on the map, and inside the walls, houses and town hall are alight`],
           ["Protected vault", `${n(PROTECTED_TREASURY_PER_LEVEL)} × City Hall of each resource can't be stolen`],
           ["Plunder", `Survivors carry ${LOAD_PER_SOLDIER} × civ load each (${perCiv((c) => `${LOAD_PER_SOLDIER * CIV_LOAD_MULT[c]}`)}), gold first`]
         ]
@@ -796,7 +812,7 @@ export const GUIDE_CHAPTERS: GuideChapter[] = [
       },
       {
         heading: "⚔️ War Frenzy",
-        body: "Once two civilizations fight this week, no one may swap or re-align between them until Sunday 00:00 UTC. Click a kingdom of the other civilization and its panel shows a red ⚔️ War Frenzy badge with the time left."
+        body: "Once two civilizations fight this week (from a battle's first round), no one may swap or re-align between them until Sunday 00:00 UTC, and no castle may change civilization while a battle goes on at its walls. Click a kingdom of the other civilization and its panel shows a red ⚔️ War Frenzy badge with the time left."
       }
     ]
   },
@@ -856,12 +872,13 @@ export const GUIDE_CHAPTERS: GuideChapter[] = [
     ],
     sections: [
       {
-        body: "In your own province and the two buffer zones bordering it, civilians do the gathering and can never be attacked; while away they don't work. Anywhere else soldiers go, and other civilizations can attack them.",
+        body: "In your own province and the two buffer zones bordering it, civilians do the gathering and can never be attacked; while away they don't work. Anywhere else soldiers go, and other civilizations can attack them. The Wild Rim round the map is no one's territory: gatherers there are always exposed.",
         facts: [
           ["Load", `${LOAD_PER_SOLDIER} × civ load × ${PVE_LOAD_MULT} per worker (${perCiv((c) => `${LOAD_PER_SOLDIER * CIV_LOAD_MULT[c] * PVE_LOAD_MULT}`)})`],
           ["Speed", `${GATHER_RATE_PER_SEC} units/s × civ bonus (elves ×2 lumber, dwarves ×1.5 stone/iron/gold, humans ×1.5 food, orcs ×1.25 all)`],
-          ["Nodes", `${DAILY_RESOURCE_NODE_COUNT} a day (2 per province and buffer zone) + a wave of ${WAVE_RESOURCE_NODE_COUNT} (1 each) every two harvests, 30 min by default; none in the Voidrift`],
-          ["Wave nodes", "Gone when their window ends; workers already there finish and bring their whole load home"],
+          ["Nodes", `${DAILY_RESOURCE_NODE_COUNT} a day + a wave of ${WAVE_RESOURCE_NODE_COUNT} every two harvests (30 min by default), the first 8 of the day one to each province and buffer zone, the rest where there is the most free ground (the Wild Rim and the Voidrift's outer band are no one's safe territory)`],
+          ["Wave nodes", "Gone when their window ends, unless workers are on the way or already there: then it stays on the map until the match is over"],
+          ["They stay put", "The day's nodes, each wave and each window's mobs and bandits are rolled once and kept: a castle moving in later never moves one or turns it into something else"],
           ["Gems", "Ride along without weight; whoever empties the node takes the rest"],
           ["Treasure", `30 s to claim; common ${n(chestTotal("common"))} … legendary ${n(chestTotal("legendary"))} + ${TREASURE_CONTENTS_BY_TIER.legendary.gems} gems`]
         ]
@@ -949,7 +966,7 @@ export const GUIDE_CHAPTERS: GuideChapter[] = [
       },
       {
         heading: "Statuses",
-        body: `The same status from the same caster refreshes; from different casters it stacks up to ${STATUS_MAX_SOURCES} times. On a boss, Paralyze lands at ${pct(BOSS_PARALYZE_MULT)} strength and never two rounds in a row, and Freeze only Chills.`,
+        body: `The same status from the same caster refreshes; from different casters it stacks up to ${STATUS_MAX_SOURCES} times. On a boss, Paralyze lands at ${pct(BOSS_PARALYZE_MULT)} strength and never two rounds in a row, and Freeze only Chills it (−${pct(BOSS_FREEZE_CHILL)} ATK for ${STATUS_RULES.chill.rounds} rounds).`,
         facts: (Object.keys(STATUS_RULES) as Array<keyof typeof STATUS_RULES>)
           .filter((k) => k !== "freeze")
           .map((k) => {
@@ -1138,7 +1155,7 @@ export const GUIDE_CHAPTERS: GuideChapter[] = [
     sections: [
       {
         heading: "🦸 Lead with your champion",
-        body: `When you send an attack, or lead or join a rally, turn on Lead with your champion. It leads one march at a time (the switch is greyed out while it is away) and only soldiers: never a mercenary band, scouts, gatherers or reinforcements. The army it leads fights with its Battle Arts and +${Math.round(CHAMPION_STAT_PER_LEVEL * 1000) / 10}% HP, ATK and DEF a level (+${pct(CHAMPION_STAT_PER_LEVEL * CHAMPION_MAX_LEVEL)} at level ${CHAMPION_MAX_LEVEL}), on top of your civilization, titles, the rally bonus and an Armory set. A champion is one hero, not a band: its Arts strike with ${pct(CHAMPION_ART_SHARE)} of its army's blow. At home it leads the garrison's defence by itself.`,
+        body: `When you send an attack, or lead or join a rally, turn on Lead with your champion. It leads one march at a time (the switch is greyed out while it is away) and only soldiers: never a mercenary band, scouts, gatherers or reinforcements. The army it leads fights with its Battle Arts and +${Math.round(CHAMPION_STAT_PER_LEVEL * 1000) / 10}% HP, ATK and DEF a level (+${pct(CHAMPION_STAT_PER_LEVEL * CHAMPION_MAX_LEVEL)} at level ${CHAMPION_MAX_LEVEL}), on top of your civilization, titles, the rally bonus and an Armory set. A champion is one hero, not a band: its Arts strike with ${pct(CHAMPION_ART_SHARE)} of its army's blow. At home it leads the garrison's defence by itself; if it rides out mid-siege it leaves the walls, and doesn't fall with the garrison it left.`,
         facts: [
           ["Its kit", `2 Instincts, 2 Arts and a Finale (legendary)`],
           ["Unlocks", `level ${KIT_UNLOCKS.instinct1} an Instinct · ${KIT_UNLOCKS.art1} an Art · ${KIT_UNLOCKS.art2} a second Art · ${KIT_UNLOCKS.instinct2} a second Instinct · ${KIT_UNLOCKS.finale} its Finale`],
@@ -1239,7 +1256,7 @@ export const GUIDE_CHAPTERS: GuideChapter[] = [
     sections: [
       {
         heading: "🚧 The seal",
-        body: "While a province's gate stands, no other civilization can attack or rally on a city in that province. Set the gate burning (walls below 25%) and the province is open for the burn, about 8 hours, until its walls repair. A fallen gate is plain to see on the map: broken open, its wall knocked down either side, on fire, and its guards gone. Resource nodes, treasure, mobs and bosses are never sealed. Nethergarde has no gate.",
+        body: `While a province's gate stands, no other civilization can attack or rally on a city in that province. Set the gate burning (walls below ${pct(WALL_BURN_THRESHOLD)}) and the province is open for the burn, until its walls repair to ${pct(WALL_UNBURN_SHARE)}: up to ${WALL_BURN_REPAIR_HOURS} hours if they fell to nothing, less the higher they stood. A fallen gate is plain to see on the map: broken open, its wall knocked down either side, on fire, and its guards gone. Resource nodes, treasure, mobs and bosses are never sealed. Nethergarde has no gate.`,
         facts: [
           ["Gate", `City Hall ${GATE_LEVEL} · walls tier ${GATE_WALL_TIER}, ${n(GATE_WALL_HP)} HP`],
           ["Base garrison", `Human ${n(GATE_BASE_GARRISON.human)} · Orc ${n(GATE_BASE_GARRISON.orc)} · Dwarf ${n(GATE_BASE_GARRISON.dwarf)} · Elf ${n(GATE_BASE_GARRISON.elf)} (regrows 50% per harvest)`],
@@ -1254,6 +1271,41 @@ export const GUIDE_CHAPTERS: GuideChapter[] = [
           ["Reinforce cap", `Human ${n(GATE_REINFORCE_CAP.human)} · Orc ${n(GATE_REINFORCE_CAP.orc)} · Dwarf ${n(GATE_REINFORCE_CAP.dwarf)} · Elf ${n(GATE_REINFORCE_CAP.elf)} (garrison + troops on duty)`],
           ["Watched Borders", `+${pct(GATE_SCOUT_CATCH.base)} catch chance for scouts heading into the province, up to +${pct(GATE_SCOUT_CATCH.max)} at a full gate; nothing while it burns`]
         ]
+      }
+    ]
+  },
+  {
+    id: "wrath",
+    group: "War",
+    title: "The Overseers' Wrath",
+    emblem: "🌑",
+    summary: `Xal'Vorath, the realm's one mythical horror, is sent by royal decree. It crawls to a kingdom's gates for ${HORROR.APPROACH_DAYS} days, and only a kingdom that keeps working can drive it back.`,
+    models: [{ label: "Xal'Vorath", preview: npc("mythic-singularity", "mythical", true) }],
+    sections: [
+      {
+        heading: "It is sent, never met by chance",
+        body: `An admin, a Special Overseer or the Archon may send it once a week, at up to ${HORROR.MAX_TARGETS} kingdoms, at a Level from ${HORROR.MIN_LEVEL} to ${HORROR.MAX_LEVEL}. Each kingdom gets its own horror, at the Level's stats divided by the number of kingdoms. The whole realm hears who it turns toward, watches it crawl across the map, and sees a banner at the top left of the screen for as long as it is out: click it for what you can do.`,
+        facts: Object.entries(HORROR_LEVELS).map(([lvl, u]): [string, string] => [`Level ${lvl}`, `${n(u.hp)} HP · ${n(u.atk)} ATK · ${u.def} DEF`])
+      },
+      {
+        heading: "Drive it back with work",
+        body: `Earn at least ${HORROR.XP_PER_DAY} XP on each of its ${HORROR.DAYS} days and it comes apart when it reaches your gates. Commits, pull requests, reviews and sealed deeds all count, once the realm has read them from Git (a deed on the realm day you wrote it), so don't leave it to the last minute. After the realm has been asleep, it waits at your gates until the realm has read Git again. Sent before ${HORROR.LATE_SEND_HOUR}:00 realm time, the first day is that day; from then on it is the next day, so no day is cut short. Your top bar counts the days.`,
+        facts: [
+          ["The road", `${HORROR.APPROACH_DAYS} days`],
+          ["To drive it back", `${HORROR.XP_PER_DAY} XP on each of ${HORROR.DAYS} days`]
+        ]
+      },
+      {
+        heading: "One hour at the gates",
+        body: `If any day falls short it stands at your gates for ${HORROR.SIEGE_HOURS} hour. You and the rulers of your civilization can attack it or raise a rally; nobody else can. It keeps its wounds from one battle to the next, and every ruler's damage counts toward the bounty until it falls. If the realm was asleep when the hour ran out, the time left is given back. It fights like a world boss (Colossus Hide, Titan's Endurance and Colossus's Wrath) with the only mythic kit in the realm.`,
+        facts: [
+          ["Its kit", "3 Instincts, 3 Arts and The Devouring"],
+          ["If it still stands", `walls to 0 and the city burns; ${pct(HORROR.TREASURY_DEVOURED)} of the treasury above the vault is devoured`]
+        ]
+      },
+      {
+        heading: "The prize",
+        body: `Slain, it leaves a hoard and a bounty worth a world boss's times its Level, the bounty shared by damage dealt, and one ${SCARCE_RESOURCES.find((r) => r.key === HORROR_GEM)?.name}: the rarest trophy in the realm, for the ruler who wounded it most, whole even if the Wrath was split. It counts toward World Boss Kills.`
       }
     ]
   },

@@ -10,6 +10,8 @@ import type {
   WatchPeriod,
   WatchPeriodKind,
   WatchPerson,
+  WatchPlay,
+  WatchPlayerRow,
   WatchRepoStat,
   WatchTree,
   WatchTreeNode
@@ -387,6 +389,55 @@ export function getGlance(kind: WatchPeriodKind, key?: string): WatchGlance {
       devs: rows,
       hours
     };
+  });
+}
+
+/* ------------------------------------------------------------------------- */
+/* 1b. Game activity (Admins only): who plays the game                         */
+/* ------------------------------------------------------------------------- */
+
+/**
+ * Every ruler, with their game actions (player_activity) and time in the realm (player_presence) per day of the period
+ * (most active first; one who never played has empty days). Unlike the roster this includes Special Overseers and the Archon: the question is who plays, not who works.
+ */
+export function getPlay(kind: WatchPeriodKind, key?: string): WatchPlay {
+  const p = periodOf(kind, key);
+  return cached(`play:${p.kind}:${p.key}`, p.current ? 60_000 : 60 * 60_000, () => {
+    const days = daysBetween(p.from, p.to);
+    const dayIdx = new Map(days.map((d, i) => [d, i]));
+    const users = new Map(
+      (db.prepare(`SELECT id, username, full_name, civilization, last_seen_at FROM users`).all() as Array<{ id: string; username: string; full_name?: string; civilization?: string; last_seen_at: string | null }>).map((u) => [u.id.toLowerCase(), u])
+    );
+    const rows = new Map<string, WatchPlayerRow>();
+    const row = (id: string): WatchPlayerRow | null => {
+      const u = users.get(id.toLowerCase());
+      if (!u) return null;
+      let r = rows.get(u.id);
+      if (!r) {
+        r = { userId: u.id, name: u.full_name || u.username, civ: u.civilization || "human", actionsByDay: days.map(() => 0), minutesByDay: days.map(() => 0), actions: 0, minutes: 0, playDays: 0, lastSeenAt: u.last_seen_at };
+        rows.set(u.id, r);
+      }
+      return r;
+    };
+    // Every ruler gets a row (empty days if they never played); the client keeps Git activity's roster plus anyone who played
+    for (const id of users.keys()) row(id);
+    for (const a of db.prepare(`SELECT user_id, day, actions FROM player_activity WHERE day >= ? AND day < ?`).all(p.from, p.to) as Array<{ user_id: string; day: string; actions: number }>) {
+      const r = row(a.user_id);
+      const i = dayIdx.get(a.day);
+      if (!r || i === undefined) continue;
+      r.actionsByDay[i] += a.actions;
+      r.actions += a.actions;
+    }
+    for (const m of db.prepare(`SELECT user_id, day, minutes FROM player_presence WHERE day >= ? AND day < ?`).all(p.from, p.to) as Array<{ user_id: string; day: string; minutes: number }>) {
+      const r = row(m.user_id);
+      const i = dayIdx.get(m.day);
+      if (!r || i === undefined) continue;
+      r.minutesByDay[i] += m.minutes;
+      r.minutes += m.minutes;
+    }
+    for (const r of rows.values()) r.playDays = days.filter((_, i) => r.actionsByDay[i] > 0 || r.minutesByDay[i] > 0).length;
+    const since = (db.prepare(`SELECT MIN(day) AS d FROM player_presence`).get() as { d: string | null }).d;
+    return { period: p, days, players: [...rows.values()].sort((a, b) => b.minutes + b.actions - (a.minutes + a.actions) || a.name.localeCompare(b.name)), presenceSince: since };
   });
 }
 

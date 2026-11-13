@@ -12,9 +12,66 @@ import {
 import { fetchRepoCommits, GitRepo, GitCommit } from "./gitFetch.js";
 import { DeveloperKingdom, ActivityEvent } from "./types.js";
 
+/**
+ * Who a commit belongs to, read fresh from SQLite. The backfill reads it again for every repo, once Git has answered,
+ * so an email an administrator matches (or unassigns) while a long backfill runs is honoured from the next repo on,
+ * instead of a name match handing the email back to someone else.
+ */
+function loadIdentity() {
+  const rawUsers = db.prepare("SELECT id, username, full_name, email FROM users").all() as Array<{
+    id: string;
+    username: string;
+    full_name?: string;
+    email?: string;
+  }>;
+
+  const userByLogin = new Map<string, { id: string }>();
+  const userByName = new Map<string, string>();
+  const emailToUserId = new Map<string, string>();
+
+  for (const u of rawUsers) {
+    userByLogin.set(u.id.toLowerCase(), u);
+    if (u.username) userByLogin.set(u.username.toLowerCase(), u);
+    if (u.email) emailToUserId.set(u.email.toLowerCase(), u.id);
+
+    if (u.full_name) {
+      const fn = u.full_name.toLowerCase().trim();
+      userByName.set(fn, u.id);
+      if (fn.includes(",")) {
+        const parts = fn.split(",").map((s) => s.trim());
+        if (parts.length === 2 && parts[0] && parts[1]) {
+          userByName.set(`${parts[1]} ${parts[0]}`, u.id);
+        }
+      } else {
+        const parts = fn.split(/\s+/);
+        if (parts.length === 2 && parts[0] && parts[1]) {
+          userByName.set(`${parts[1]}, ${parts[0]}`, u.id);
+        }
+      }
+    }
+  }
+
+  // Load existing secondary/discovered emails
+  try {
+    const existingEmails = stmtGetAllUserEmails.all() as Array<{ email: string; user_id: string }>;
+    for (const ee of existingEmails) {
+      emailToUserId.set(ee.email.toLowerCase(), ee.user_id.toLowerCase());
+    }
+  } catch {
+    // ignore
+  }
+
+  // Admin per-repo matches of shared emails, checked before every other rule
+  const repoEmailRules = loadRepoEmailRules();
+
+  return { userByLogin, userByName, emailToUserId, repoEmailRules };
+}
+
 class BackfillService {
   private isRunning = false;
   private shouldStop = false;
+  /** The run in progress, so a reset can wait for it to stop */
+  private current: Promise<void> | null = null;
 
   get status() {
     const progress = getBackfillProgress();
@@ -33,18 +90,39 @@ class BackfillService {
     }
   }
 
-  reset() {
-    this.stop();
-    resetAllRepoBackfills();
-    console.log(`[Backfill] 🔄 Reset all repository backfill checkpoints. Ready to re-process.`);
-  }
-
-  async start(
+  /**
+   * Clears every checkpoint and re-indexes all repos. A run already going is stopped and waited for first, so it
+   * can't mark a repo done after the reset, and the new run isn't turned away as a duplicate.
+   */
+  async restart(
     kingdomsRef: DeveloperKingdom[],
     logCallback: (text: string, type: ActivityEvent["type"]) => void,
     onRealmProgress?: () => void
   ) {
-    if (this.isRunning) return;
+    this.stop();
+    await this.current;
+    resetAllRepoBackfills();
+    console.log(`[Backfill] 🔄 Reset all repository backfill checkpoints. Re-processing.`);
+    await this.start(kingdomsRef, logCallback, onRealmProgress);
+  }
+
+  start(
+    kingdomsRef: DeveloperKingdom[],
+    logCallback: (text: string, type: ActivityEvent["type"]) => void,
+    onRealmProgress?: () => void
+  ): Promise<void> {
+    if (this.current) return this.current;
+    this.current = this.run(kingdomsRef, logCallback, onRealmProgress).finally(() => {
+      this.current = null;
+    });
+    return this.current;
+  }
+
+  private async run(
+    kingdomsRef: DeveloperKingdom[],
+    logCallback: (text: string, type: ActivityEvent["type"]) => void,
+    onRealmProgress?: () => void
+  ) {
     if (!config.backfillEnabled) {
       console.log("[Backfill] ⏸️ Historical backfill is disabled in .env (BACKFILL_ENABLED=false)");
       return;
@@ -69,55 +147,10 @@ class BackfillService {
 
       console.log(`[Backfill] ⏳ Resuming historical backfill: ${unbackfilled.length} repos remaining out of ${initialProgress.total} (target start year: ${config.backfillStartYear})...`);
 
-      // Load user identity lookup caches from SQLite
-      const rawUsers = db.prepare("SELECT id, username, full_name, email FROM users").all() as Array<{
-        id: string;
-        username: string;
-        full_name?: string;
-        email?: string;
-      }>;
-
-      const userByLogin = new Map<string, { id: string }>();
-      const userByName = new Map<string, string>();
-      const emailToUserId = new Map<string, string>();
-
-      for (const u of rawUsers) {
-        userByLogin.set(u.id.toLowerCase(), u);
-        if (u.username) userByLogin.set(u.username.toLowerCase(), u);
-        if (u.email) emailToUserId.set(u.email.toLowerCase(), u.id);
-
-        if (u.full_name) {
-          const fn = u.full_name.toLowerCase().trim();
-          userByName.set(fn, u.id);
-          if (fn.includes(",")) {
-            const parts = fn.split(",").map((s) => s.trim());
-            if (parts.length === 2 && parts[0] && parts[1]) {
-              userByName.set(`${parts[1]} ${parts[0]}`, u.id);
-            }
-          } else {
-            const parts = fn.split(/\s+/);
-            if (parts.length === 2 && parts[0] && parts[1]) {
-              userByName.set(`${parts[1]}, ${parts[0]}`, u.id);
-            }
-          }
-        }
-      }
-
-      // Load existing secondary/discovered emails
-      try {
-        const existingEmails = stmtGetAllUserEmails.all() as Array<{ email: string; user_id: string }>;
-        for (const ee of existingEmails) {
-          emailToUserId.set(ee.email.toLowerCase(), ee.user_id.toLowerCase());
-        }
-      } catch {
-        // ignore
-      }
-
-      // Admin per-repo matches of shared emails, checked before every other rule
-      const repoEmailRules = loadRepoEmailRules();
-
       const sinceDate = new Date(Date.UTC(config.backfillStartYear, 0, 1, 0, 0, 0));
       let lastProgressAt = Date.now();
+      /** Repos Git couldn't be read for: left unmarked, so the next run (the next Git sync) tries them again */
+      let failed = 0;
 
       for (const repo of unbackfilled) {
         if (this.shouldStop) {
@@ -132,12 +165,19 @@ class BackfillService {
           default_branch: repo.default_branch || "main"
         };
 
-        let commits: GitCommit[] = [];
+        let commits: GitCommit[];
         try {
-          commits = await fetchRepoCommits(gitRepo, sinceDate, 5000);
+          // The whole history back to the start year, however long
+          commits = await fetchRepoCommits(gitRepo, sinceDate, { maxItems: 0 });
         } catch (err: any) {
-          console.warn(`[Backfill] ⚠️ Could not fetch commits for ${repo.full_name}: ${err.message}`);
+          failed++;
+          console.warn(`[Backfill] ⚠️ Could not fetch commits for ${repo.full_name}: ${err.message} (will retry next run)`);
+          if (config.backfillDelayMs > 0) await new Promise((resolve) => setTimeout(resolve, config.backfillDelayMs));
+          continue;
         }
+
+        // Read after Git answered: the links as they stand now, not when the run started
+        const { userByLogin, userByName, emailToUserId, repoEmailRules } = loadIdentity();
 
         const dbCommits: Array<{
           hash: string;
@@ -209,7 +249,10 @@ class BackfillService {
         }
       }
 
-      if (!this.shouldStop) {
+      if (!this.shouldStop && failed > 0) {
+        console.warn(`[Backfill] ⚠️ ${failed} repositor${failed === 1 ? "y" : "ies"} could not be read from Git; retrying at the next sync.`);
+        onRealmProgress?.();
+      } else if (!this.shouldStop) {
         const finalProgress = getBackfillProgress();
         console.log(
           `[Backfill] 🎉 Historical backfill complete! All ${finalProgress.total} repos indexed down to ${config.backfillStartYear}.`

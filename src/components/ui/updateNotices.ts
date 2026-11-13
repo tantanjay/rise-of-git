@@ -1,5 +1,8 @@
 import type { LucideIcon } from "lucide-react";
-import { BookOpen, Castle, CloudLightning, Coins, Crown, Feather, Flag, Flame, HeartPulse, Medal, Megaphone, MonitorSmartphone, Skull, Sun, Swords, Trophy, Wand2 } from "lucide-react";
+import { BookOpen, Castle, DoorOpen, CloudLightning, Coins, Crown, Feather, Flag, Flame, Globe, HeartPulse, Medal, Megaphone, MonitorSmartphone, Moon, Skull, Sparkles, Sun, Swords, Trophy, Wand2 } from "lucide-react";
+import { FOOTPRINT, RIM_AREAS, VOID_SCALE, WILD_FRAME, WORLD_SCALE } from "@/utils/worldGeometry";
+import { VOID_GATE_TEASER } from "@/utils/voidGate";
+import { HORROR } from "@/utils/horror";
 import { BAND_BOSS_DAMAGE, MERC_RARITIES, MERC_RULES, bandCapForSlots, costText } from "@/utils/mercenaries";
 import { ARMORY_RARITIES, ARMORY_RULES, ARMORY_TARGET_SHARE } from "@/utils/armory";
 import { CHAMPION_MAX_LEVEL, CHAMPION_SLOTS, CHAMPION_STAT_PER_LEVEL, KIT_UNLOCKS, LOOK_OPTIONS, healMsFor } from "@/utils/champion";
@@ -25,7 +28,7 @@ import { MARCH_SLOT_LEVELS, NPC_KINGDOM_TREASURY_PER_LEVEL, PACK_GEAR, PACK_GEAR
 export type NoticeAccent = "gold" | "ember" | "steel" | "royal" | "moon" | "blood";
 
 /** A headline design: its lettering, entrance and the effect behind it */
-export type BannerStyle = "gilded" | "inferno" | "forge" | "arcane" | "moonlit" | "savage" | "storm" | "dawn" | "heroic";
+export type BannerStyle = "gilded" | "inferno" | "forge" | "arcane" | "moonlit" | "savage" | "storm" | "dawn" | "heroic" | "hearth";
 
 export interface UpdateNotice {
   /** Stable id: what "Don't show again" remembers. Never reuse or rename one */
@@ -67,6 +70,81 @@ const epicTreasuryGold = NPC_KINGDOM_TREASURY_PER_LEVEL.gold * 25 * REALM_TREASU
 const wipedOut = 70;
 
 export const UPDATE_NOTICES: UpdateNotice[] = [
+  {
+    id: "2026-11-a-proper-welcome",
+    date: "2026-11-11",
+    title: "A Proper Welcome",
+    tagline: "Come in from the road, ruler: the gates open on a realm that is ready for you",
+    body: `Welcome home! The realm now greets you at its gates: the castle emblem turns, embers drift up and a tip keeps you company while the land is charted and the torches are lit. When the gates swing open, your map is ready and waiting, and only then does the herald step forward with your news.`,
+    highlights: [
+      "A loading screen of its own, from the moment you arrive until the realm is drawn, and on every trip between the map and a city",
+      "Its bar walks with you through each step: reading the realm, charting the land, raising the castles, forging the colours, lighting the torches",
+      "No more frozen page: the land is built a little at a time, so the realm stays lively while it loads",
+      "The herald, its fanfare and battle reports wait politely until you are in, never mid-load",
+      "A tip about the realm turns over while you wait"
+    ],
+    icon: DoorOpen,
+    accent: "gold",
+    banner: "hearth",
+    guideChapter: "realm"
+  },
+  {
+    id: "2026-11-void-gate-stirs",
+    date: "2026-11-10",
+    title: "The Void Gate Stirs",
+    tagline: "A mythic gate has torn open in the Voidrift, south of the Core",
+    body: `Look south of the Nethergarde Core: a broken arch of floating obsidian now stands in the rift, its vortex turning wilder every hour. No army can pass it yet. Click it on the map to see what waits behind it.`,
+    highlights: [
+      `A ${VOID_GATE_TEASER.levels}-level climb into the void, with a boss every ${VOID_GATE_TEASER.bossEvery}th level`,
+      "A brood of void creatures for each stage, and the Gate Warden at the very bottom",
+      `It will let in rulers from City Hall ${VOID_GATE_TEASER.opensAtCityHall}, any civilization: grow your armies now`,
+      "Coming soon: until then the gate only watches"
+    ],
+    icon: Sparkles,
+    accent: "royal",
+    banner: "arcane",
+    guideChapter: "realm"
+  },
+  {
+    id: "2026-11-room-to-breathe",
+    date: "2026-11-10",
+    title: "Room to Breathe",
+    tagline: "The realm grows, a wild rim wraps it, and nothing stacks",
+    body: `The world map was getting crowded: palisades, boss rings, packs and markers piled onto one spot. Every province, buffer zone and frontier strip now has ${Math.round((WORLD_SCALE ** 2 - 1) * 100)}% more ground, and the whole map is wrapped in the Wild Rim, ${WILD_FRAME} units of open frontier on every side, each stretch a wilder, rockier edge of the region beside it. Every kind of thing on the map now keeps its own patch of ground, and a spawn with no room waits for the next window instead of landing on another.`,
+    highlights: [
+      `Every zone ${Math.round((WORLD_SCALE ** 2 - 1) * 100)}% bigger; castles spread out with it, so your neighbours are still your neighbours`,
+      `The Nethergarde Voidrift grew more still: ${Math.round((VOID_SCALE ** 2) * 100 - 100)}% more ground on top. Its castles keep a tight ring round the Core; the open band beyond is where packs and nodes land and Xal'Vorath tears in`,
+      `The Wild Rim: ${RIM_AREAS.length} stretches of frontier round the map where resource nodes and roving packs spread out (no castles, realms or bosses)`,
+      "Nodes on the rim are no one's safe territory: gatherers there can always be attacked",
+      `Spacing by footprint: a boss keeps a ${FOOTPRINT.boss}-unit circle, a castle ${FOOTPRINT.castle}, a node ${FOOTPRINT.resource}, and nothing spawns inside another's`,
+      "Every province and buffer zone still gets its own resource node each day; the rest go where there is the most free ground",
+      "Marches move faster to match the bigger map: every road takes as long as it did, and rations cost the same",
+      "Xal'Vorath finds clear ground to tear in and to stop on, a little farther out when a city's neighbours crowd it"
+    ],
+    icon: Globe,
+    accent: "gold",
+    banner: "dawn",
+    guideChapter: "realm"
+  },
+  {
+    id: "2026-11-overseers-wrath",
+    date: "2026-11-09",
+    title: "The Overseers' Wrath",
+    tagline: "Xal'Vorath walks the realm, and only honest work can turn it back",
+    body: `The Crown can now loose the realm's one mythical horror on a kingdom. It crawls across the map for ${HORROR.APPROACH_DAYS} days in plain sight of everyone. A kingdom that keeps working drives it back when it reaches the gates. One that doesn't has a single hour, with its whole civilization beside it, to bring the titan down before the city burns.`,
+    highlights: [
+      `Sent by admins, Special Overseers and the Archon, once a week each, at up to ${HORROR.MAX_TARGETS} kingdoms, Level ${HORROR.MIN_LEVEL}–${HORROR.MAX_LEVEL}`,
+      `Earn ${HORROR.XP_PER_DAY} XP on each of its ${HORROR.DAYS} days and it comes apart at your gates: your top bar counts them`,
+      `Otherwise it waits ${HORROR.SIEGE_HOURS} hour at the gates: you and your civilization can attack or rally, and it keeps its wounds between battles`,
+      `Left standing, it burns the walls and devours ${pct(HORROR.TREASURY_DEVOURED)} of the treasury above the vault`,
+      "Slain, it pays by its Level and leaves one Heart of the Void, the rarest trophy in the realm",
+      "A great event window and a banner tell the whole realm while it is out: see the titan, what you can do, and fly straight to it"
+    ],
+    icon: Moon,
+    accent: "blood",
+    banner: "inferno",
+    guideChapter: "wrath"
+  },
   {
     id: "2026-11-battle-ring",
     date: "2026-11-09",

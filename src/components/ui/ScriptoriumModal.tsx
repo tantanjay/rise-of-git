@@ -209,7 +209,7 @@ function MyDeedsTab({ data, onXpChanged, reload }: { data: ScriptoriumData; onXp
   useEffect(() => {
     if (xp !== null && allowance && !allowance.choices.includes(xp)) setXp(null);
   }, [allowance, xp]);
-  const willWait = allowance && xp !== null && allowance.sealed + allowance.pending + xp > data.rules.autoSeal + 1e-9;
+  const willWait = allowance && xp !== null && allowance.used + xp > data.rules.autoSeal + 1e-9; // sealed + pending + revoked, as the server counts it
 
   if (!data.role.signedIn) return <div className="py-10 text-center text-sm text-slate-400">Sign in with Git to write deed reports.</div>;
 

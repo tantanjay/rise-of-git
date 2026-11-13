@@ -37,6 +37,8 @@ export const STATUS_RULES: Record<StatusKind, { name: string; emblem: string; ro
 export const FINALE_LAST_STAND = 0.25;
 export const STATUS_MAX_SOURCES = 3;
 export const BOSS_PARALYZE_MULT = 0.5;
+/** Freeze on a boss is only a Chill of this share for 2 rounds (mirrors BOSS_FREEZE_CHILL) */
+export const BOSS_FREEZE_CHILL = 0.5;
 export const BLEED_GROWTH = 1;
 /** Rounds of a battle, and of a rally's */
 export const BATTLE_ROUNDS = 6;

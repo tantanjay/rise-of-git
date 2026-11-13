@@ -1,5 +1,5 @@
 import { CivilizationType, TitleBuffs } from "./types.js";
-import { FAMINE_DESERTION_RATE, SOLDIER_FOOD_UPKEEP, SWAP_DEFEAT_SURVIVAL, VOID_WELL_RESPAWN_RATE } from "./warConfig.js";
+import { FAMINE_DESERTION_RATE, SOLDIER_FOOD_UPKEEP, SWAP_DEFEAT_SURVIVAL, VOID_WELL_RESPAWN_RATE, maxSoldiersFor } from "./warConfig.js";
 import { config } from "./env.js";
 import { CIV_MODIFIERS, MIN_STAT_SHARE } from "./warConfig.js";
 
@@ -300,7 +300,10 @@ export function simulateDemographicCycle(params: {
 
 /**
  * Proportional Saturation Conversion for Civilization Swaps
- * Scales a player's population percentage smoothly into the new civilization's capacity.
+ * Scales a player's population percentage smoothly into the new civilization's capacity. A change made by war
+ * (ascending, being cast down) keeps at least 5% of capacity and 5 people; a peaceful one (`peaceful`: a swap or a
+ * re-alignment) keeps the real fill ratio, so swapping never makes people. Either way the soldiers keep their share
+ * of the people up to the new civilization's soldier cap; the rest go back to the fields.
  */
 export function convertPopulationOnSwap(params: {
   currentPop: number;
@@ -310,24 +313,27 @@ export function convertPopulationOnSwap(params: {
   newCiv: CivilizationType;
   newLevel: number;
   isCombatDefeat?: boolean;
+  /** A peaceful swap or re-alignment: no floor on the fill ratio */
+  peaceful?: boolean;
 }): { newPopulation: number; newSoldiers: number } {
-  const { currentPop, currentSoldiers, oldCiv, oldLevel, newCiv, newLevel, isCombatDefeat = false } = params;
+  const { currentPop, currentSoldiers, oldCiv, oldLevel, newCiv, newLevel, isCombatDefeat = false, peaceful = false } = params;
 
   const oldMaxCap = calculateMaxPopulation(oldLevel, oldCiv);
   const newMaxCap = calculateMaxPopulation(newLevel, newCiv);
 
   // Saturation percentage
-  let saturation = Math.min(1, Math.max(0.05, currentPop / oldMaxCap));
+  const fill = oldMaxCap > 0 ? Math.max(0, currentPop) / oldMaxCap : 0;
+  let saturation = Math.min(1, peaceful ? fill : Math.max(0.05, fill));
 
   // A defender cast out of Nethergarde loses part of its people in the siege
   if (isCombatDefeat) {
     saturation *= SWAP_DEFEAT_SURVIVAL;
   }
 
-  const newPop = Math.min(newMaxCap, Math.max(5, Math.floor(saturation * newMaxCap)));
-  // Retain roughly the same proportion of military mobilization
+  const newPop = Math.min(newMaxCap, peaceful ? Math.floor(saturation * newMaxCap) : Math.max(5, Math.floor(saturation * newMaxCap)));
+  // Retain roughly the same proportion of military mobilization, never past the new civilization's soldier cap
   const soldierRatio = currentPop > 0 ? currentSoldiers / currentPop : 0;
-  const newSoldiers = Math.min(newPop, Math.floor(newPop * soldierRatio));
+  const newSoldiers = Math.min(newPop, maxSoldiersFor(newPop, newCiv), Math.floor(newPop * soldierRatio));
 
   return {
     newPopulation: newPop,

@@ -104,7 +104,7 @@ export const CIV_DEMOGRAPHICS: Record<CivilizationType, CivDemographicProfile> =
       trait: "Shield Wall",
       traitDesc: "Absorbs 40% incoming physical damage"
     },
-    civilianYieldDesc: "+150 Stone, +100 Iron, +40 Tools per 100 Civilians"
+    civilianYieldDesc: "+150 Stone, +100 Iron, +40 Gold per 100 Civilians"
   },
   elf: {
     name: "Elves",
@@ -253,6 +253,10 @@ export const WALL_DAMAGE_TAKEN_MULT = [1, 0.9, 0.8, 0.7, 0.6, 0.5] as const;
 export const WALL_HP_PER_LEVEL = 1000;
 export const WALL_TIER_HP_MULT = [1, 1.2, 1.4, 1.6, 1.8, 2.0] as const;
 export const WALL_BURN_THRESHOLD = 0.25;
+/** A burning castle's walls repair to this share of max HP before the fire goes out (mirror of server WALL_UNBURN_SHARE)… */
+export const WALL_UNBURN_SHARE = 0.26;
+/** …at this pace: 0% to WALL_UNBURN_SHARE in this many hours (mirror of server WALL_BURN_REPAIR_MS), so a burn lasts up to it */
+export const WALL_BURN_REPAIR_HOURS = 8;
 export const LOAD_PER_SOLDIER = 20;
 export const CIV_LOAD_MULT: Record<CivilizationType, number> = {
   dwarf: 1.5,

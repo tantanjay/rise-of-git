@@ -233,11 +233,11 @@ export function RealmSky() {
         castShadow
         shadow-mapSize-width={2048}
         shadow-mapSize-height={2048}
-        shadow-camera-left={-90}
-        shadow-camera-right={90}
-        shadow-camera-top={90}
-        shadow-camera-bottom={-90}
-        shadow-camera-far={320}
+        shadow-camera-left={-108}
+        shadow-camera-right={108}
+        shadow-camera-top={108}
+        shadow-camera-bottom={-108}
+        shadow-camera-far={360}
         shadow-bias={-0.0005}
       />
       <directionalLight ref={fill} position={[-50, 40, -50]} />

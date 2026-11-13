@@ -4,7 +4,9 @@ import * as THREE from "three";
 import { HighGraphicsEmpyrean } from "./HighGraphicsEmpyrean";
 import { HeroBatch, HeroSite } from "./HeroBatch";
 import { BossBatch } from "./BossBatch";
+import { HighGraphicsSingularity } from "./HighGraphicsSingularity";
 import type { BossLive } from "./heroRig";
+import type { HorrorPlacement } from "./realmTypes";
 import { CastlePlacement } from "./WorldCastles";
 import { hdSceneTarget } from "@/components/3d/HdPost";
 import { useHd } from "@/utils/graphics";
@@ -17,13 +19,30 @@ import { useHd } from "@/utils/graphics";
  * part stays hidden until its shaders have compiled in the background (`compileAsync`), so coming into view never
  * stalls a frame.
  */
-export function HeroMount({ castles, sites, bosses = [], bossLive }: { castles: CastlePlacement[]; sites: HeroSite[]; bosses?: HeroSite[]; bossLive?: Record<string, BossLive> }) {
+/** Xal'Vorath's size on the map: it matches the Normal rig's at the mythical tier */
+const HORROR_MAP_SCALE = 1.25;
+
+export function HeroMount({
+  castles,
+  sites,
+  bosses = [],
+  bossLive,
+  horrors = []
+}: {
+  castles: CastlePlacement[];
+  sites: HeroSite[];
+  bosses?: HeroSite[];
+  bossLive?: Record<string, BossLive>;
+  /** Xal'Vorath out in the realm: the hand-built titan, no lights or full-screen effects of its own */
+  horrors?: HorrorPlacement[];
+}) {
   const gl = useThree((s) => s.gl);
   const scene = useThree((s) => s.scene);
   const camera = useThree((s) => s.camera);
   const refs = useRef<Array<THREE.Group | null>>([]);
   const batchRef = useRef<THREE.Group>(null);
   const bossRef = useRef<THREE.Group>(null);
+  const horrorRef = useRef<THREE.Group>(null);
   // Programs depend on the environment and on drawing to the screen or to bloom's buffer: compile again when they change
   const reflections = useHd("reflections");
   const bloom = useHd("bloom");
@@ -32,7 +51,7 @@ export function HeroMount({ castles, sites, bosses = [], bossLive }: { castles: 
   // first real render asks for; textures are uploaded ahead too
   useEffect(() => {
     let alive = true;
-    const groups = [...refs.current.slice(0, castles.length), batchRef.current, bossRef.current].filter((g): g is THREE.Group => Boolean(g));
+    const groups = [...refs.current.slice(0, castles.length), batchRef.current, bossRef.current, horrorRef.current].filter((g): g is THREE.Group => Boolean(g));
     groups.forEach((g) => (g.visible = false));
     const raf = requestAnimationFrame(() => {
       for (const g of groups) {
@@ -59,7 +78,7 @@ export function HeroMount({ castles, sites, bosses = [], bossLive }: { castles: 
       alive = false;
       cancelAnimationFrame(raf);
     };
-  }, [gl, scene, camera, castles.length, sites, bosses, reflections, bloom]);
+  }, [gl, scene, camera, castles.length, sites, bosses, horrors.length, reflections, bloom]);
 
   return (
     <>
@@ -85,6 +104,15 @@ export function HeroMount({ castles, sites, bosses = [], bossLive }: { castles: 
       {bosses.length > 0 && (
         <group ref={bossRef} visible={false}>
           <BossBatch sites={bosses} live={bossLive} />
+        </group>
+      )}
+      {horrors.length > 0 && (
+        <group ref={horrorRef} visible={false}>
+          {horrors.map((h) => (
+            <group key={h.id} position={[h.x, h.y, h.z]} rotation={[0, h.yaw, 0]} scale={HORROR_MAP_SCALE}>
+              <HighGraphicsSingularity action={h.action} reflections={false} screenFx={false} lights={false} timeOffset={h.offset} pace={h.pace} />
+            </group>
+          ))}
         </group>
       )}
     </>

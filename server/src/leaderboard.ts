@@ -1,4 +1,4 @@
-import { db } from "./db.js";
+import { db, COMMIT_UNCLAIMED } from "./db.js";
 import { config } from "./env.js";
 import { scoreCommits, prXp, XP_RULES, isMeaningfulCommit, round1 } from "./scoring.js";
 import { calculateBuildingLevel, loginListed } from "./kingdomUtils.js";
@@ -51,8 +51,7 @@ const stmtUserCommits = db.prepare(`
   SELECT c.hash, c.repo_id, c.committed_at, c.message, c.lines_added, c.lines_deleted, c.meaningful_lines
   FROM commits c
   WHERE c.author_login = ?
-     OR c.author_email = ?
-     OR c.author_email IN (SELECT email FROM user_emails WHERE user_id = ?)
+     OR ((c.author_email = ? OR c.author_email IN (SELECT email FROM user_emails WHERE user_id = ?)) AND ${COMMIT_UNCLAIMED})
 `);
 const stmtUserEmail = db.prepare("SELECT email FROM users WHERE id = ?");
 const stmtOwnedRepos = db.prepare("SELECT id FROM repositories WHERE owner_login = ?");

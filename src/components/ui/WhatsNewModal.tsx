@@ -16,7 +16,7 @@ const ACCENT: Record<NoticeAccent, { glow: string; deep: string }> = {
   blood: { glow: "#f43f5e", deep: "#4c0519" }
 };
 
-type Fx = "rays" | "embers" | "sparks" | "orbit" | "stars" | "claws" | "rain" | "sunrise" | "burst";
+type Fx = "rays" | "embers" | "sparks" | "orbit" | "stars" | "claws" | "rain" | "sunrise" | "burst" | "gates";
 
 /**
  * Every headline design: its lettering (a gradient through the title), its glow, how it enters (a CSS class in
@@ -97,8 +97,26 @@ const BANNERS: Record<BannerStyle, { text: string; glow: string; enter: string; 
     backdrop: () => "radial-gradient(80% 80% at 50% 45%, #fbbf2455 0%, #581c87cc 45%, #0b0218 100%)",
     tracking: "0.03em",
     eyebrow: "text-amber-200/90"
+  },
+  hearth: {
+    text: "linear-gradient(180deg, #fffbeb 0%, #fef3c7 30%, #fcd34d 55%, #f59e0b 78%, #c2410c 100%)",
+    glow: "#fbbf24",
+    enter: "wn-enter-welcome",
+    fx: "gates",
+    backdrop: () => "radial-gradient(95% 75% at 50% 100%, #f59e0b70 0%, #9a3412b3 40%, #2a1306 75%, #120904 100%)",
+    tracking: "0.02em",
+    eyebrow: "text-amber-100/90"
   }
 };
+
+/** Lanterns hung across the hearth banner: [left %, rope sag px, swing delay s] */
+const LANTERNS = [
+  [10, 6, 0],
+  [28, 14, 0.7],
+  [50, 17, 0.3],
+  [72, 14, 1.1],
+  [90, 6, 0.5]
+] as const;
 
 /** Fixed spots for the effects (deterministic, so every open looks the same): [left %, top %, delay s] */
 const SPOTS = [
@@ -175,6 +193,28 @@ function BannerFx({ fx, glow }: { fx: Fx; glow: string }) {
             style={{ background: `repeating-conic-gradient(from 0deg, #fde68a1f 0deg 4deg, transparent 4deg 15deg)` }}
             aria-hidden
           />
+        </>
+      );
+    case "gates":
+      return (
+        <>
+          {/* Firelight through the open gates, breathing like a hearth */}
+          <div className="absolute inset-x-0 bottom-0 h-3/4 pointer-events-none wn-hearth" style={{ background: "radial-gradient(60% 80% at 50% 100%, #fde68a66 0%, #f59e0b33 40%, transparent 75%)" }} aria-hidden />
+          {/* The two gate leaves swing open, outwards, as the banner enters */}
+          <div className="absolute inset-y-0 left-0 w-1/2 pointer-events-none wn-gate-left" style={{ background: "repeating-linear-gradient(90deg, #3b1d0a 0 22px, #2a1306 22px 24px)", boxShadow: "inset -6px 0 12px #00000080" }} aria-hidden />
+          <div className="absolute inset-y-0 right-0 w-1/2 pointer-events-none wn-gate-right" style={{ background: "repeating-linear-gradient(90deg, #2a1306 0 2px, #3b1d0a 2px 24px)", boxShadow: "inset 6px 0 12px #00000080" }} aria-hidden />
+          {/* A rope of lanterns across the top, each swinging gently */}
+          <svg className="absolute inset-x-0 top-0 w-full h-6 pointer-events-none" viewBox="0 0 100 20" preserveAspectRatio="none" aria-hidden>
+            <path d="M0 2 Q 50 34 100 2" fill="none" stroke="#92400e" strokeWidth="1.5" vectorEffect="non-scaling-stroke" />
+          </svg>
+          {LANTERNS.map(([left, sag, delay], i) => (
+            <span key={i} className="absolute top-0 pointer-events-none wn-lantern" style={{ left: `${left}%`, paddingTop: sag, animationDelay: `${delay}s` }} aria-hidden>
+              <span className="block mx-auto w-px h-2 bg-amber-800" />
+              <span className="block w-3 h-4 rounded-[40%] wn-lantern-glow" style={{ background: "radial-gradient(circle at 50% 40%, #fffbeb, #fcd34d 45%, #ea580c 100%)", boxShadow: "0 0 14px 5px #f59e0b99", animationDelay: `${delay * 1.7}s` }} />
+            </span>
+          ))}
+          {/* Warm motes drifting up from the hearth */}
+          {SPOTS.map((_, i) => dot(i, "w-1 h-1 rounded-full wn-mote", { top: "100%", background: "#fef3c7", boxShadow: `0 0 8px 2px ${glow}`, animationDuration: `${4 + (i % 4) * 0.8}s` }))}
         </>
       );
     case "burst":

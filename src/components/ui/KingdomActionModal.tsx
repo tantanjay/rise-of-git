@@ -45,12 +45,12 @@ interface KingdomActionModalProps {
 
 const civProfileName = (civ: DeveloperKingdom["civilization"]) => (CIV_DEMOGRAPHICS[civ] ?? CIV_DEMOGRAPHICS.human).name;
 
-/** Population after converting at the same fill ratio (mirrors convertPopulationOnSwap, no casualties) */
+/** Population after a peaceful swap at the same fill ratio (mirrors convertPopulationOnSwap with `peaceful`: no floor, no casualties) */
 function convertedPopulation(k: DeveloperKingdom, newCiv: DeveloperKingdom["civilization"]): number {
   const level = k.cityHallLevel || 1;
-  const fill = Math.min(1, Math.max(0.05, (k.population ?? 0) / Math.max(1, getMaxPopulation(level, k.civilization))));
+  const fill = Math.min(1, Math.max(0, (k.population ?? 0) / Math.max(1, getMaxPopulation(level, k.civilization))));
   const newMax = getMaxPopulation(level, newCiv);
-  return Math.min(newMax, Math.max(5, Math.floor(fill * newMax)));
+  return Math.min(newMax, Math.floor(fill * newMax));
 }
 
 /** Caravan rows: request key, sender balance key and display */

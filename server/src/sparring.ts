@@ -63,7 +63,7 @@ export function sparringRoster(): SparringUnit[] {
     .entries.filter((e: CodexEntry) => e.category === "boss" && !e.teaser)
     .map((e) => {
       const u = bossUnitFor(e.type);
-      return { id: e.type, name: e.name, emblem: e.emblem, rarity: "legendary", kind: "boss", subtitle: e.subtitle, kit: bossKitFor(e.type, e.name), kitLines: kitLines(u.kit), unit: { hp: u.hp, atk: u.atk, def: u.def } };
+      return { id: e.type, name: e.name, emblem: e.emblem, rarity: e.rarity === "mythical" ? "mythic" : "legendary", kind: "boss", subtitle: e.subtitle, kit: bossKitFor(e.type, e.name), kitLines: kitLines(u.kit), unit: { hp: u.hp, atk: u.atk, def: u.def } };
     });
   const packs: SparringUnit[] = getCodexCatalog()
     .entries.filter((e: CodexEntry) => (e.category === "mob" || e.category === "bandit") && !e.teaser)

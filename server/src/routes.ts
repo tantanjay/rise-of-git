@@ -13,10 +13,11 @@ import { getScoutReports, latestScoutReportsByTarget } from "./scouting.js";
 import { announceFestival, announceSeasonIfNew, onlineRulerIds, getUnreadBroadcasts, listBroadcasts, markBroadcastsRead, noteRulerSeen, noticeKey, setNoticeLogger } from "./broadcasts.js";
 import { realmNow } from "./realmTime.js";
 import { callDisaster, disasterStatus, endDisasterNow, listDisasters, tickDisasters } from "./disasters.js";
+import { horrorKey, horrorNpcs, horrorStatuses, liftWrath, sendWrath, tickHorrors, wrathOverview } from "./horror.js";
 import { DISASTER_KINDS, DisasterKind } from "./disasterRules.js";
 import { getChronicleDraft, latestChronicle, listChronicles, previewChronicle, publishChronicle } from "./chronicle.js";
 import { announceImprovementRefund, proclaimAnnouncement, previewGiftPlan, grantGiftPlan, grantShield, liftShield, punishKingdom, liftPunishment, grantFestival, getDecreeAudit } from "./decrees.js";
-import { bossStatusesFor, getRovingSpawnsFor, getWorldStateVersion, nodeStatusesFor, npcKingdomStatusesFor, pruneNpcKingdoms, resetNpcKingdoms, withActiveBoss } from "./worldNpcs.js";
+import { bossStatusesFor, getRovingSpawnsFor, getWorldStateVersion, heldSpawnsKey, nodeStatusesFor, npcKingdomStatusesFor, pruneNpcKingdoms, resetNpcKingdoms, withActiveBoss } from "./worldNpcs.js";
 import { fetchAllAdminEmails, peekRepoCommits, mapPool } from "./gitFetch.js";
 import { realignCivilization, proposeSwap, answerSwap, listSwapProposals } from "./diplomacy.js";
 import { authRouter, sessionUser, authEnabled, isRequestAdmin, isRequestSpecialUser } from "./auth.js";
@@ -25,7 +26,7 @@ import { getLeaderboard, getRenownPodium, markDevDailyStatsStale } from "./leade
 import { rebuildRealmWithTitles, getTitleProgress, TITLE_CATEGORIES } from "./titles.js";
 import { getTree, createDivision, updateDivision, deleteDivision, createClient, updateClient, deleteClient, createProject, updateProject, deleteProject, assignRepo, unassignRepo, writeDeed, editDeed, reviewDeed, revokeDeed, sealAllDeeds, listDeeds, deedAllowance, deedDays, pendingDeedCount, scriptoriumValidationWarnings, exportRealmBackup, importRealmBackup, DEED_RULES, ScriptoriumViewer, DeedScope } from "./scriptorium.js";
 import { sendOmen, listOmens, myOmens, omensLeftToday, markOmenRead, markAllOmensRead, unreadOmenCount, OMEN_KINDS, OMEN_RULES, DEFAULT_HEEDED_TITLE } from "./omens.js";
-import { getGlance, getTreeStats, getPerson, getImpact, invalidateWatchtower } from "./watchtower.js";
+import { getGlance, getPlay, getTreeStats, getPerson, getImpact, invalidateWatchtower } from "./watchtower.js";
 import { runSparring, sparringRoster } from "./sparring.js";
 import { campView, dismissBand, healBand, hireBand, listBands, stopHealing } from "./mercenaries.js";
 import { armoryView, forgeSets, scrapSets } from "./armory.js";
@@ -63,7 +64,7 @@ router.use((req: Request, res: Response, next) => {
 function rovingKeyFor(viewerId: string | null): string {
   const reports = latestScoutReportsByTarget(viewerId);
   const latest = Math.max(0, ...Array.from(reports.values(), (r) => r.availableAt));
-  return `${currentRovingWindow().key}-w${getWorldStateVersion()}-s${latest}`;
+  return `${currentRovingWindow().key}-w${getWorldStateVersion()}-s${latest}-h${horrorKey()}-m${heldSpawnsKey()}`;
 }
 router.use("/auth", authRouter);
 
@@ -172,6 +173,14 @@ function onHistoryStored() {
   refreshInMemoryRealm();
 }
 
+/**
+ * 🌑 Xal'Vorath's arrivals wait after a start until the first Git sync has read the work done while the server was down
+ * (or, if it hangs, HORROR_CATCH_UP_MAX_MS): a kingdom is judged on all of its three days
+ */
+const startedAt = Date.now();
+const HORROR_CATCH_UP_MAX_MS = 30 * 60_000;
+let gitCaughtUp = !git.hasToken;
+
 /** Pull users/repos/commits from Git, save to SQLite per-repo, and rebuild kingdoms incrementally */
 async function refreshFromGit() {
   if (!git.hasToken || realmState.syncing) return;
@@ -200,6 +209,7 @@ async function refreshFromGit() {
     logActivity(`⚠️ Live sync failed: ${err.message}`, "system");
   } finally {
     realmState.syncing = false;
+    gitCaughtUp = true;
   }
 }
 
@@ -230,6 +240,17 @@ const checkDisasters = () => {
 };
 checkDisasters();
 setInterval(checkDisasters, 60_000).unref();
+
+// 🌑 Xal'Vorath: a road that is over ends in the gates or in its dissolving, an hour that is out in fire
+const checkHorrors = () => {
+  try {
+    if (tickHorrors(kingdoms, Date.now(), { judgeArrivals: gitCaughtUp || Date.now() - startedAt > HORROR_CATCH_UP_MAX_MS })) refreshInMemoryRealm();
+  } catch (err: any) {
+    console.error("[Horror] Tick failed:", err.message);
+  }
+};
+setTimeout(checkHorrors, 5_000).unref();
+setInterval(checkHorrors, 60_000).unref();
 
 router.get("/status", (req: Request, res: Response) => {
   const viewerId = sessionUser(req);
@@ -264,6 +285,8 @@ router.get("/status", (req: Request, res: Response) => {
     realmTime: realmNow(syncService.currentWindow()),
     // The world disaster in force, or the next one within the hour of its warning (GAME_GUIDE §10 World Disasters)
     disaster: disasterStatus(),
+    // Xal'Vorath out in the realm, with each target's work so far (GAME_GUIDE §15 Wrath)
+    horrors: horrorStatuses(),
     // The latest weekly story while it is under a week old: its banner (GAME_GUIDE §14)
     chronicle: latestChronicle(),
     // Rulers with the realm open right now (signed in, polled in the last 2.5 min): a white curtain of light on the map
@@ -309,7 +332,9 @@ router.get("/map/roving", (req: Request, res: Response) => {
   const roving = getRovingSpawnsFor(kingdoms, reports);
   const persistent = getOrGenerateFlatWorldMap(kingdoms).npcs;
   const nodes = nodeStatusesFor([...persistent, ...roving.npcs], viewerId, reports);
-  res.json({ ...roving, nodes, bosses: bossStatusesFor(persistent), npcKingdoms: npcKingdomStatusesFor(persistent, reports), key: rovingKeyFor(viewerId) });
+  // 🌑 Xal'Vorath walks the map as a boss of its own, sent apart so a step of its road never rebuilds the roving batch
+  const horrors = horrorNpcs();
+  res.json({ ...roving, horrors, nodes, bosses: bossStatusesFor([...persistent, ...horrors]), npcKingdoms: npcKingdomStatusesFor(persistent, reports), key: rovingKeyFor(viewerId) });
 });
 
 // Kingdoms of other civilizations are fogged for the viewer; not signed in = every mortal kingdom is fogged
@@ -630,7 +655,23 @@ router.post("/decrees/shield/:id/lift", (req: Request, res: Response) => {
 // ⛈️ Punish a kingdom for 1–14 days (no harvest; optionally low births / high deaths)
 router.post("/decrees/punish", (req: Request, res: Response) => {
   const b = req.body ?? {};
-  decree(req, res, false, (actorId) => punishKingdom({ actorId, targetId: b.targetId, days: b.days, lowBirth: b.lowBirth, highDeath: b.highDeath, wrath: b.wrath, kingdoms }));
+  decree(req, res, false, (actorId) => punishKingdom({ actorId, targetId: b.targetId, days: b.days, lowBirth: b.lowBirth, highDeath: b.highDeath, kingdoms }));
+});
+
+// 🌑 Wrath: when this sender may send Xal'Vorath again, and who it is coming for
+router.get("/decrees/wrath", (req: Request, res: Response) => {
+  const actorId = requireDecreeHolder(req, res);
+  if (actorId) res.json(wrathOverview(actorId));
+});
+
+// 🌑 Wrath (Special Overseers and the Archon, once a week): Xal'Vorath at one or more kingdoms
+router.post("/decrees/wrath", (req: Request, res: Response) => {
+  const b = req.body ?? {};
+  decree(req, res, false, (actorId) => sendWrath({ actorId, targetIds: b.targetIds, level: b.level, kingdoms }), (r) => `🌑 ${r.message}`);
+});
+
+router.post("/decrees/wrath/:id/lift", (req: Request, res: Response) => {
+  decree(req, res, false, (actorId) => liftWrath(actorId, req.params.id));
 });
 
 router.post("/decrees/punish/:id/lift", (req: Request, res: Response) => {
@@ -757,6 +798,11 @@ function watch(req: Request, res: Response, run: (kind: "week" | "month", key?: 
 }
 
 router.get("/watchtower/glance", (req, res) => watch(req, res, (kind, key) => getGlance(kind, key)));
+// Who plays the game: Admins only
+router.get("/watchtower/play", (req, res) => {
+  if (!isRequestAdmin(req)) return res.status(403).json({ error: "Game activity is for Admins only" });
+  watch(req, res, (kind, key) => getPlay(kind, key));
+});
 router.get("/watchtower/tree", (req, res) => watch(req, res, (kind, key) => getTreeStats(kind, key)));
 router.get("/watchtower/people/:id", (req, res) => watch(req, res, (kind, key) => getPerson(req.params.id, kind, key) ?? { error: "Unknown developer" }));
 router.get("/watchtower/impact", (req, res) => watch(req, res, () => getImpact()));
@@ -1545,8 +1591,8 @@ router.post("/admin/backfill/reset", (req: Request, res: Response) => {
   }
 
   try {
-    backfillService.reset();
-    backfillService.start(kingdoms, logActivity, onHistoryStored);
+    // A run already going is stopped and waited for, then every repo is read again
+    backfillService.restart(kingdoms, logActivity, onHistoryStored).catch((err) => console.error("❌ Backfill restart failed:", err));
     logActivity(`🔄 [ADMIN] Historical backfill checkpoints reset. Re-indexing all repos down to ${config.backfillStartYear}...`, "sync");
     res.json({
       success: true,
@@ -1572,10 +1618,10 @@ router.post("/admin/dev/:id/resync-commits", async (req: Request, res: Response)
   }
 
   try {
-    // 1. Fetch freshly registered emails from Git
+    // 1. Fetch freshly registered emails from Git (verified only, as in a sync: an unverified one could be anyone's)
     const rawAdminEmails = await fetchAllAdminEmails();
     const gitEmails = rawAdminEmails
-      .filter((ae) => ae.username && ae.username.toLowerCase() === user.username.toLowerCase())
+      .filter((ae) => ae.verified === true && ae.username && ae.username.toLowerCase() === user.username.toLowerCase())
       .map((ae) => ae.email.toLowerCase().trim());
 
     // 2. Re-attribute commits and link emails in SQLite

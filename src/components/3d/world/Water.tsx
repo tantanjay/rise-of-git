@@ -2,6 +2,10 @@ import { useEffect, useMemo } from "react";
 import { useFrame } from "@react-three/fiber";
 import * as THREE from "three";
 import { RIVER_FROM_Z, SEA_LEVEL, Terrain, WORLD_SIZE, riverX } from "./terrain";
+import { PROVINCE_OFFSET, WORLD_SCALE } from "@/utils/worldGeometry";
+
+/** Valoria's river centre line in GLSL (p.y is world z): the same curve as `riverX` */
+const RIVER_GLSL = `${(-PROVINCE_OFFSET).toFixed(3)} + sin(p.y * ${(0.12 / WORLD_SCALE).toFixed(5)}) * ${(4 * WORLD_SCALE).toFixed(4)}`;
 
 /*
  * The world's water, alive: one plane, one draw call. A depth map baked from the terrain lets the shader tint shallows
@@ -15,11 +19,11 @@ import { RIVER_FROM_Z, SEA_LEVEL, Terrain, WORLD_SIZE, riverX } from "./terrain"
  * Every wave layer fades out by its size on screen (fwidth), so the zoomed-out map stays calm and never shimmers.
  */
 
-const DEPTH_RES = 160;
+const DEPTH_RES = 196;
 /** Depth (sea level − ground) that maps to 1 in the depth map */
 const DEPTH_SCALE = 3;
 
-/** The depth samples per terrain: the map's terrain is cached across city visits, so its 25,600 samples are taken once */
+/** The depth samples per terrain: the map's terrain is cached across city visits, so its ~38,000 samples are taken once */
 const depthData = new WeakMap<Terrain, Uint8Array>();
 
 function depthTexture(terrain: Terrain): THREE.DataTexture {
@@ -87,7 +91,7 @@ const FRAGMENT_COLOR = `
   float wave = smoothstep(0.55, 1.0, sin(depth * 70.0 - t * 2.2 + sin(p.x * 0.3 + p.y * 0.2) * 2.0));
   col = mix(col, vec3(0.93, 0.98, 1.0), shore * (0.25 + 0.55 * wave) * step(0.004, depth));
   // Valoria's river: a current of streaks flowing south along its bed
-  float riverX = -44.0 + sin(p.y * 0.12) * 4.0;
+  float riverX = ${RIVER_GLSL};
   float inRiver = smoothstep(2.2, 0.9, abs(p.x - riverX)) * smoothstep(uRiverFrom, uRiverFrom + 5.0, p.y);
   float lane = floor((p.x - riverX) * 2.5);
   float flow = sin((p.y - t * 2.4) * 1.6 + waterHash(vec2(lane, 1.0)) * 6.28);
@@ -150,7 +154,7 @@ float wRough = 1.0;
   float mid = smoothstep(0.3, 0.1, px);
 
   // Valoria's river, and its silt fanning out past the mouth
-  float riverX = -44.0 + sin(p.y * 0.12) * 4.0;
+  float riverX = ${RIVER_GLSL};
   float across = p.x - riverX;
   float past = max(p.y - uMouth, 0.0);
   // Past the mouth the fresh water fans out and wanders, fading into the sea

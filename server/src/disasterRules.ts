@@ -284,6 +284,11 @@ export function zonedTime(day: string, hour: number, tz: string): number {
   return second;
 }
 
+/** Sunday 00:00 UTC of the week `ms` falls in */
+const utcWeekOf = (ms: number) => {
+  const d = new Date(ms);
+  return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() - d.getUTCDay());
+};
 const dayIndexOf = (day: string) => Math.round((Date.parse(`${day}T00:00:00Z`) - Date.parse(`${DISASTER_EPOCH_DAY}T00:00:00Z`)) / DAY_MS);
 const dayAt = (index: number) => new Date(Date.parse(`${DISASTER_EPOCH_DAY}T00:00:00Z`) + index * DAY_MS).toISOString().slice(0, 10);
 
@@ -322,6 +327,7 @@ export function rollDisasterSchedule(lastDay: string, tz: string): ScheduledDisa
   let thisWeek = 0;
   let lastKind: DisasterKind | null = null;
   let bag: DisasterKind[] = [];
+  const perUtcWeek = new Map<number, number>();
   const last = dayIndexOf(lastDay);
   for (let i = 0; i <= last; i++) {
     const day = dayAt(i);
@@ -339,12 +345,17 @@ export function rollDisasterSchedule(lastDay: string, tz: string): ScheduledDisa
       chance = Math.min(1, chance + S.MISS_STEP);
       continue;
     }
-    if (!bag.length) bag = shuffledBag(`disaster-bag:${day}`, lastKind);
-    const kind = bag.shift()!;
     // Weighted to the morning; quarter-hour starts
     const [from, to] = slotRoll < S.MORNING_SHARE ? [S.START_FROM, S.MORNING_TO] : [S.MORNING_TO, S.START_TO];
     const hour = Math.min(S.START_TO, from + Math.round(hourRoll * (to - from) * 4) / 4);
     const startsAt = zonedTime(day, hour, tz);
+    // The cap holds for the week a disaster starts in (Sunday 00:00 UTC, as the other weekly resets): a realm day's early
+    // start can fall in the UTC week before, which may already have its three (the chance waits as it is)
+    const utcWeek = utcWeekOf(startsAt);
+    if ((perUtcWeek.get(utcWeek) ?? 0) >= S.MAX_PER_WEEK) continue;
+    perUtcWeek.set(utcWeek, (perUtcWeek.get(utcWeek) ?? 0) + 1);
+    if (!bag.length) bag = shuffledBag(`disaster-bag:${day}`, lastKind);
+    const kind = bag.shift()!;
     out.push({ day, kind, startsAt, endsAt: startsAt + S.DURATION_MS, chance: certain ? 1 : chance });
     thisWeek++;
     lastKind = kind;

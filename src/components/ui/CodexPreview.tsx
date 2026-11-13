@@ -656,7 +656,7 @@ function ModelCanvas({ preview, civ, view, prestige }: { preview: Preview; civ: 
   const ground = preview.kind === "improvement" || preview.kind === "building" ? 140 : 40;
   const isSingularityHd = preview.kind === "singularity_hd";
   /** The mythic showcases sit on a dark violet stage; HD kit models on a neutral dark one, so mythic stays apart */
-  const mythic = isSingularityHd || preview.kind === "empyrean_hd" || (preview.kind === "npc" && preview.type === VOID_GATE_TYPE) || (preview.kind === "void_brood" && preview.brood === "warden");
+  const mythic = isSingularityHd || (preview.kind === "npc" && preview.type === "mythic-singularity") || preview.kind === "empyrean_hd" || (preview.kind === "npc" && preview.type === VOID_GATE_TYPE) || (preview.kind === "void_brood" && preview.brood === "warden");
   const kit = ((preview.kind === "npc" || preview.kind === "folk" || preview.kind === "castle" || preview.kind === "improvement" || preview.kind === "building" || preview.kind === "void_brood") && !!preview.hd) || preview.kind === "hero_hd" || preview.kind === "boss_hd";
   /** A family's line-up is read left to right: it holds still */
   const lineup = preview.kind === "void_brood" && preview.size === undefined && preview.brood !== "warden";

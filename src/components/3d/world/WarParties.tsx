@@ -661,6 +661,13 @@ export function WarParties({
   useEffect(() => {
     const current = Date.now();
     updateBattleRings(marches);
+    // A poll that clears the timer just as it was due (or a late poll) must not skip a change: one that fell between the
+    // clock this render used and now is caught up at once, else the armies would stand in the old phase until the next one
+    const missed = marches.some((m) => [nextPhaseChange(m, now), nextRingChange(m, now)].some((t) => t !== null && t <= current));
+    if (missed) {
+      setNow(current);
+      return;
+    }
     const next = marches.flatMap((m) => [nextPhaseChange(m, current), nextRingChange(m, current)]).filter((t): t is number => t !== null);
     if (next.length === 0) return;
     const id = setTimeout(() => setNow(Date.now()), Math.max(16, Math.min(...next) - current + 20));

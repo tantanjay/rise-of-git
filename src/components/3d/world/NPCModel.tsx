@@ -36,7 +36,7 @@ export function NPCModel({
   ruined = false,
   hd = false
 }: {
-  npc: Pick<MapNPC, "id" | "type" | "x" | "z" | "rarity" | "landmarkState" | "landmarkStep" | "realm">;
+  npc: Pick<MapNPC, "horrorPhase" | "id" | "type" | "x" | "z" | "rarity" | "landmarkState" | "landmarkStep" | "realm">;
   /** World boss: the next boss rising as a phantom where the last one fell */
   slumbering?: boolean;
   /** World boss: armies attack it from here, so it turns on them and strikes */
@@ -85,8 +85,8 @@ export function NPCModel({
 
   if (hasRig(npc.type)) {
     // Only bosses turn on their attackers
-    const fightYaw = fighting && npc.type.startsWith("boss-") ? Math.atan2(fighting.x - npc.x, fighting.z - npc.z) : null;
-    return <BossModel type={npc.type} slumbering={slumbering} fightYaw={fightYaw} showcase={showcase} cryId={showcase ? undefined : npc.id} />;
+    const fightYaw = fighting && (npc.type.startsWith("boss-") || npc.horrorPhase) ? Math.atan2(fighting.x - npc.x, fighting.z - npc.z) : null;
+    return <BossModel type={npc.type} slumbering={slumbering} fightYaw={fightYaw} showcase={showcase} cryId={showcase ? undefined : npc.id} seedId={npc.horrorPhase ? npc.id : undefined} />;
   }
 
   return (

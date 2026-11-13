@@ -3,7 +3,7 @@ import { ChevronLeft, ChevronRight, ChevronDown, TriangleAlert } from "lucide-re
 import { Modal } from "./Modal";
 import { Combobox } from "./Combobox";
 import { API_BASE } from "@/config";
-import type { WatchGlance, WatchImpact, WatchImpactMetrics, WatchPeriodKind, WatchPerson, WatchTree, WatchTreeNode } from "@/types";
+import type { WatchGlance, WatchImpact, WatchImpactMetrics, WatchPeriodKind, WatchPerson, WatchPlay, WatchTree, WatchTreeNode } from "@/types";
 import { BEFORE, Columns, compact, HBarStack, Heatmap, Legend, LineChart, SERIES, StatTile } from "./watchtowerCharts";
 import { sound } from "@/hooks/useSound";
 import { HeaderTile, TreeIcon, WatchtowerIcon } from "./realmIcons";
@@ -71,13 +71,89 @@ function PeriodBar({ kind, setKind, keyValue, setKey, label, prevKey, nextKey }:
 /* 1. At a glance                                                              */
 /* ------------------------------------------------------------------------- */
 
-function Glance({ g, onPerson }: { g: WatchGlance; onPerson: (id: string) => void }) {
+const minutesText = (m: number) => (m >= 60 ? `${Math.floor(m / 60)}h ${String(m % 60).padStart(2, "0")}m` : `${m}m`);
+/** Online while the client polled in the last few minutes, as the top bar's Who is online */
+const isOnline = (iso: string | null) => Boolean(iso && Date.now() - Date.parse(iso) < 3 * 60_000);
+const sinceText = (iso: string | null) => {
+  if (!iso) return "never";
+  if (isOnline(iso)) return "online now";
+  const min = Math.floor((Date.now() - Date.parse(iso)) / 60_000);
+  if (min < 60) return `${min} min ago`;
+  if (min < 48 * 60) return `${Math.floor(min / 60)} h ago`;
+  return `${Math.floor(min / 1440)} days ago`;
+};
+
+/** Admins only: who plays the game, per day (time in the realm and game actions) */
+function GameActivity({ play, roster }: { play: WatchPlay | null; roster: Set<string> }) {
+  if (!play) return <div className="py-6 text-center text-xs text-slate-500">The watchmen are looking…</div>;
+  // The same rows as Git activity (the roster), plus anyone else who played: rulers who never play stay out
+  const shown = play.players.filter((p) => p.playDays > 0 || roster.has(p.userId));
+  const played = shown.filter((p) => p.playDays > 0);
+  const byLabel = new Map(shown.map((p) => [p.name, p]));
+  const rows = shown.map((p) => ({ id: p.userId, label: p.name, values: p.minutesByDay.map((m, i) => m + p.actionsByDay[i]) }));
+  return (
+    <div className="space-y-3">
+      <p className="text-[11px] text-slate-500">
+        Time with the realm open and game actions (marches, rallies, trades, improvements…) per ruler per day (UTC).
+        {play.presenceSince ? ` Time in the realm is recorded since ${play.presenceSince}.` : " Time in the realm is recorded from now on."}
+      </p>
+      {rows.length === 0 ? (
+        <div className="text-xs text-slate-500">No one played this period.</div>
+      ) : (
+        <>
+          <Heatmap
+            rows={rows}
+            cols={play.days}
+            colLabel={(c) => shortDay(c)}
+            cellTip={(row, col) => {
+              const p = byLabel.get(row);
+              const i = play.days.indexOf(col);
+              return p && i >= 0 ? `${minutesText(p.minutesByDay[i])} in the realm · ${p.actionsByDay[i]} actions on ${dayTitle(col)} · ${row}` : row;
+            }}
+          />
+          <div className="text-[11px] text-slate-500">
+            {played.length} played this period{shown.length > played.length ? ` · ${shown.length - played.length} on the roster did not` : ""}
+          </div>
+          {played.length > 0 && (
+            <div className="overflow-x-auto">
+              <table className="w-full text-xs tabular-nums">
+                <thead className="text-slate-500 text-[10px] uppercase tracking-wider">
+                  <tr>
+                    {["Ruler", "Play days", "Time in realm", "Actions", "Last seen"].map((h, i) => (
+                      <th key={h} className={`py-1 pr-3 font-semibold ${i ? "text-right" : "text-left"}`}>
+                        {h}
+                      </th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {played.map((p) => (
+                    <tr key={p.userId} className="border-t border-slate-800/80">
+                      <td className="py-1 pr-3 text-slate-200 whitespace-nowrap">{p.name}</td>
+                      <td className="py-1 pr-3 text-right font-mono text-slate-300">{p.playDays}</td>
+                      <td className="py-1 pr-3 text-right font-mono text-slate-300">{minutesText(p.minutes)}</td>
+                      <td className="py-1 pr-3 text-right font-mono text-slate-300">{p.actions}</td>
+                      <td className={`py-1 pr-3 text-right whitespace-nowrap ${isOnline(p.lastSeenAt) ? "text-emerald-300" : "text-slate-400"}`}>{sinceText(p.lastSeenAt)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+function Glance({ g, onPerson, isAdmin, play, activity, setActivity }: { g: WatchGlance; onPerson: (id: string) => void; isAdmin: boolean; play: WatchPlay | null; activity: "git" | "game"; setActivity: (a: "git" | "game") => void }) {
   // Folded by default: the count and the first names show in its header
   const [quietOpen, setQuietOpen] = useState(false);
   const k = g.kpis;
   const quiet = g.devs.filter((d) => d.quiet).sort((a, b) => (b.daysSince ?? 999) - (a.daysSince ?? 999));
   const active = g.devs.filter((d) => !d.quiet);
   const xpRows = [...active].sort((a, b) => b.gitXp + b.deedXp - (a.gitXp + a.deedXp)).map((d) => ({ id: d.userId, label: d.name, values: [d.gitXp, d.deedXp] }));
+  const roster = useMemo(() => new Set(g.devs.map((d) => d.userId)), [g.devs]);
   const heatRows = [...g.devs].sort((a, b) => b.byDay.reduce((s, v) => s + v, 0) - a.byDay.reduce((s, v) => s + v, 0)).map((d) => ({ id: d.userId, label: d.name, values: d.byDay }));
   return (
     <div className="space-y-4">
@@ -152,9 +228,35 @@ function Glance({ g, onPerson }: { g: WatchGlance; onPerson: (id: string) => voi
       </div>
 
       <div className={card}>
-        <div className={h3}>Daily activity</div>
-        <p className="text-[11px] text-slate-500 mb-2">Commits, PRs, reviews and deeds per developer per day.</p>
-        <Heatmap rows={heatRows} cols={g.days} colLabel={(c) => shortDay(c)} cellTip={(row, col, v) => `${v} on ${dayTitle(col)} · ${row}`} />
+        <div className="flex flex-wrap items-center gap-2 mb-2">
+          <div className="text-xs font-semibold text-slate-200">Daily activity</div>
+          {isAdmin && (
+            <div className="ml-auto flex rounded-lg border border-slate-700 overflow-hidden text-[11px]" role="tablist">
+              {(["git", "game"] as const).map((k) => (
+                <button
+                  key={k}
+                  role="tab"
+                  aria-selected={activity === k}
+                  onClick={() => {
+                    sound.playClick();
+                    setActivity(k);
+                  }}
+                  className={`px-2.5 py-1 font-semibold ${activity === k ? "bg-sky-900/60 text-sky-100" : "bg-slate-900 text-slate-400 hover:text-slate-200"}`}
+                >
+                  {k === "git" ? "Git activity" : "Game activity"}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+        {activity === "game" && isAdmin ? (
+          <GameActivity play={play} roster={roster} />
+        ) : (
+          <>
+            <p className="text-[11px] text-slate-500 mb-2">Commits, PRs, reviews and deeds per developer per day.</p>
+            <Heatmap rows={heatRows} cols={g.days} colLabel={(c) => shortDay(c)} cellTip={(row, col, v) => `${v} on ${dayTitle(col)} · ${row}`} />
+          </>
+        )}
       </div>
 
       <div className={card}>
@@ -544,7 +646,10 @@ function ImpactView({ i }: { i: WatchImpact }) {
 /* Panel                                                                       */
 /* ------------------------------------------------------------------------- */
 
-export function WatchtowerModal({ open, onClose }: { open: boolean; onClose: () => void }) {
+export function WatchtowerModal({ open, onClose, isAdmin = false }: { open: boolean; onClose: () => void; isAdmin?: boolean }) {
+  // Admins see the Daily activity card split into Git activity and Game activity (who plays)
+  const [activity, setActivity] = useState<"git" | "game">("git");
+  const [play, setPlay] = useState<WatchPlay | null>(null);
   const [tab, setTab] = useState<Tab>("glance");
   const [kind, setKind] = useState<WatchPeriodKind>("week");
   const [key, setKey] = useState<string | undefined>(undefined);
@@ -572,6 +677,18 @@ export function WatchtowerModal({ open, onClose }: { open: boolean; onClose: () 
       live = false;
     };
   }, [open, tab, q]);
+
+  useEffect(() => {
+    if (!open || !isAdmin || tab !== "glance" || activity !== "game") return;
+    let live = true;
+    setPlay(null);
+    get<WatchPlay>(`/play${q}`)
+      .then((p) => live && setPlay(p))
+      .catch((e) => live && setError(e.message));
+    return () => {
+      live = false;
+    };
+  }, [open, isAdmin, tab, activity, q]);
 
   useEffect(() => {
     if (!open || tab !== "people" || !personId) return;
@@ -651,7 +768,7 @@ export function WatchtowerModal({ open, onClose }: { open: boolean; onClose: () 
     >
       <div className={`p-4 sm:p-6 transition-opacity ${loading ? "opacity-60" : ""}`}>
         {error && <div className="mb-3 p-2.5 rounded-lg border border-red-500/40 bg-red-950/40 text-red-200 text-xs">{error}</div>}
-        {tab === "glance" && (glance ? <Glance g={glance} onPerson={(id) => (setPersonId(id), setTab("people"))} /> : <Loading />)}
+        {tab === "glance" && (glance ? <Glance g={glance} onPerson={(id) => (setPersonId(id), setTab("people"))} isAdmin={isAdmin} play={play} activity={activity} setActivity={setActivity} /> : <Loading />)}
         {tab === "tree" && (tree ? <TreeView t={tree} /> : <Loading />)}
         {tab === "people" && (person ? <PersonView p={person} /> : <Loading />)}
         {tab === "impact" && (impact ? <ImpactView i={impact} /> : <Loading />)}

@@ -1,12 +1,13 @@
 import { useEffect, useMemo, useState } from "react";
-import { Crown, Dice5, FileJson, Gift, ScrollText, Shield, CloudLightning, History, CheckCircle2, AlertTriangle, Search, PartyPopper, BookOpen, Copy, Check, Eye } from "lucide-react";
+import { Moon, Crown, Dice5, FileJson, Gift, ScrollText, Shield, CloudLightning, History, CheckCircle2, AlertTriangle, Search, PartyPopper, BookOpen, Copy, Check, Eye } from "lucide-react";
 import { Modal } from "./Modal";
 import { Combobox } from "./Combobox";
 import { useDialog } from "./Dialog";
 import { CivFrame } from "./CivFrame";
 import { WatchtowerIcon } from "./realmIcons";
 import { activePunishment, activeShield, punishmentLabel, shieldLabel } from "./DecreeChips";
-import { ChronicleDraft, ChronicleMarks, CivilizationType, DecreeAuditEntry, DeveloperKingdom, GiftAmounts, SCARCE_RESOURCES } from "@/types";
+import { ChronicleDraft, ChronicleMarks, CivilizationType, DecreeAuditEntry, DeveloperKingdom, GiftAmounts, HorrorStatus, SCARCE_RESOURCES } from "@/types";
+import { HORROR, HORROR_LEVELS, horrorWait } from "@/utils/horror";
 import { CIV_EMBLEM } from "@/utils/war";
 import { FESTIVAL } from "@/utils/civDemographics";
 import { timeLeftLabel } from "@/utils/format";
@@ -21,7 +22,7 @@ import { weekLabel } from "./ChroniclesBook";
  * Chronicle for admins and Special Overseers, gifts of resources for admins. Every decree is checked and applied on the server.
  */
 
-type Tab = "announce" | "gift" | "shield" | "punish" | "proclaim" | "chronicle" | "audit";
+type Tab = "announce" | "gift" | "shield" | "punish" | "wrath" | "proclaim" | "chronicle" | "audit";
 
 const CIVS: CivilizationType[] = ["human", "elf", "dwarf", "orc", "arcane"];
 const CIV_NAME: Record<CivilizationType, string> = { human: "Human", elf: "Elf", dwarf: "Dwarf", orc: "Orc", arcane: "Nethergarde" };
@@ -831,6 +832,120 @@ function PunishTab({ kingdoms, onDone }: { kingdoms: DeveloperKingdom[]; onDone:
 }
 
 /* ------------------------------------------------------------------------- */
+/* 🌑 Wrath                                                                   */
+/* ------------------------------------------------------------------------- */
+
+interface WrathOverview {
+  readyAt: number;
+  maxTargets: number;
+  active: HorrorStatus[];
+}
+
+function WrathTab({ kingdoms, onDone }: { kingdoms: DeveloperKingdom[]; onDone: () => void }) {
+  const dialog = useDialog();
+  const mortals = useMemo(() => kingdoms.filter((k) => !k.isSpecial && !k.isArchon), [kingdoms]);
+  const [targets, setTargets] = useState<string[]>([]);
+  const [level, setLevel] = useState("3");
+  const [overview, setOverview] = useState<WrathOverview | null>(null);
+  // When the panel last read the Wrath: what the sender's wait counts down from
+  const [readAt, setReadAt] = useState(0);
+  const [busy, setBusy] = useState(false);
+  const [ok, setOk] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const load = () => {
+    fetch(`${API_BASE}/decrees/wrath`)
+      .then((r) => (r.ok ? r.json() : Promise.reject()))
+      .then((d) => {
+        setOverview(d);
+        setReadAt(Date.now());
+      })
+      .catch(() => setError("Could not read the Wrath."));
+  };
+  useEffect(load, []);
+
+  const run = async (fn: () => Promise<{ message: string }>) => {
+    setBusy(true);
+    setOk(null);
+    setError(null);
+    try {
+      setOk((await fn()).message);
+      setTargets([]);
+      load();
+      onDone();
+    } catch (e: any) {
+      setError(e.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const lvl = Number(level);
+  const split = Math.max(1, targets.length);
+  const stats = HORROR_LEVELS[lvl];
+  const waiting = overview && overview.readyAt > readAt;
+  const tooMany = targets.length > HORROR.MAX_TARGETS;
+  const names = targets.map((id) => mortals.find((k) => k.id === id)?.name ?? id).join(", ");
+
+  const send = async () => {
+    const yes = await dialog.confirm({
+      tone: "danger",
+      title: "Send Xal'Vorath?",
+      message: `Level ${lvl} at ${names}. It reaches the gates in ${HORROR.APPROACH_DAYS} days, and the whole realm hears of it. You can send it once a week.`,
+      confirmLabel: "Send it"
+    });
+    if (yes) run(() => post("/decrees/wrath", { targetIds: targets, level: lvl }));
+  };
+
+  return (
+    <div className="grid gap-4 md:grid-cols-2">
+      <div className="space-y-3">
+        <span className={label}>Kingdoms (up to {HORROR.MAX_TARGETS}, the most the realm bears at once)</span>
+        <RulerPicker kingdoms={mortals} selected={targets} onChange={setTargets} multi height="h-60" />
+      </div>
+      <div className="space-y-3">
+        <p className="text-xs text-slate-300">
+          The mythical horror crawls toward each kingdom for {HORROR.APPROACH_DAYS} days. A kingdom that earns {HORROR.XP_PER_DAY} XP on each of its {HORROR.DAYS} days drives it back. If not, it waits {HORROR.SIEGE_HOURS} hour at the gates, then burns the walls and devours {Math.round(HORROR.TREASURY_DEVOURED * 100)}% of the treasury above the vault, unless that kingdom's civilization brings it down.
+        </p>
+        <div>
+          <span className={label}>Level</span>
+          <Combobox options={Object.keys(HORROR_LEVELS).map((v) => ({ value: v, label: `Level ${v}`, hint: `${fmt(HORROR_LEVELS[Number(v)].hp)} HP` }))} value={level} onChange={(v) => setLevel(v)} ariaLabel="The horror's Level" />
+        </div>
+        <div className="px-2.5 py-2 rounded-lg bg-slate-950 border border-slate-800 text-[11px] font-mono text-slate-300">
+          Each horror: {fmt(Math.round(stats.hp / split))} HP · {fmt(Math.round(stats.atk / split))} ATK · {Math.round(stats.def / split)} DEF{split > 1 ? ` (÷ ${split} kingdoms)` : ""}
+        </div>
+        {waiting && <p className="text-xs text-amber-300">You have sent it this week. You can send it again in {horrorWait(overview!.readyAt - readAt)}.</p>}
+        {tooMany && <p className="text-xs text-rose-300">One Wrath can name at most {HORROR.MAX_TARGETS} kingdoms.</p>}
+        <Result ok={ok} error={error} />
+        <div className="flex justify-end">
+          <ActionButton busy={busy} tone="slate" disabled={!overview || Boolean(waiting) || targets.length === 0 || tooMany} onClick={send}>
+            <Moon className="w-4 h-4" /> Send Xal'Vorath
+          </ActionButton>
+        </div>
+        {(overview?.active.length ?? 0) > 0 && (
+          <div>
+            <span className={label}>Out in the realm</span>
+            <div className="space-y-1">
+              {overview!.active.map((h) => (
+                <div key={h.id} className="flex items-center gap-2 px-2 py-1.5 rounded-lg bg-slate-950 border border-slate-800 text-xs">
+                  <span className="flex-1 truncate text-slate-200">{h.targetName}</span>
+                  <span className="text-slate-400 text-[11px]">
+                    Level {h.level} · {h.phase === "siege" ? "at the gates" : "on the road"}
+                  </span>
+                  <button disabled={busy} onClick={() => run(() => post(`/decrees/wrath/${h.id}/lift`))} className="px-2 py-0.5 rounded bg-slate-800 border border-slate-600 text-slate-200 hover:bg-slate-700">
+                    Call off
+                  </button>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------------- */
 /* 📖 Weekly Chronicle                                                        */
 /* ------------------------------------------------------------------------- */
 
@@ -1156,6 +1271,7 @@ export function RoyalDecreesModal({
     { id: "gift", label: "Give resources", icon: <Gift className="w-3.5 h-3.5" />, show: isAdmin },
     { id: "shield", label: "Shield", icon: <Shield className="w-3.5 h-3.5" />, show: true },
     { id: "punish", label: "Punish", icon: <CloudLightning className="w-3.5 h-3.5" />, show: true },
+    { id: "wrath", label: "Wrath", icon: <Moon className="w-3.5 h-3.5" />, show: true },
     { id: "proclaim", label: "Proclamations", icon: <PartyPopper className="w-3.5 h-3.5" />, show: true },
     { id: "chronicle", label: "Weekly Chronicle", icon: <BookOpen className="w-3.5 h-3.5" />, show: true },
     { id: "audit", label: "Audit", icon: <History className="w-3.5 h-3.5" />, show: true }
@@ -1225,6 +1341,7 @@ export function RoyalDecreesModal({
         {tab === "gift" && isAdmin && <GiftTab kingdoms={kingdoms} onDone={done} />}
         {tab === "shield" && <ShieldTab kingdoms={kingdoms} onDone={done} />}
         {tab === "punish" && <PunishTab kingdoms={kingdoms} onDone={done} />}
+        {tab === "wrath" && <WrathTab kingdoms={kingdoms} onDone={done} />}
         {tab === "proclaim" && <ProclaimTab kingdoms={kingdoms} onDone={done} />}
         {tab === "chronicle" && <ChronicleTab onDone={done} />}
         {tab === "audit" && <AuditTab refreshKey={auditKey} />}

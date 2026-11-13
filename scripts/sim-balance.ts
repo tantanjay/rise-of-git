@@ -54,7 +54,9 @@ import { CIV_DEMOGRAPHICS, calculateMaxPopulation, effectiveUnit, estimateNatura
 import { DYNAMIC_15M_TEMPLATES } from "../server/src/worldMapGenerator";
 import { ARTS, FINALES, INSTINCTS, kitProblems, type UnitRarity } from "../server/src/battleArts";
 import { CIV_MODIFIERS as CLIENT_MODIFIERS, PACK_GEAR as CLIENT_PACK_GEAR, REALM_CONQUEST_HOARD as CLIENT_REALM_HOARD, REALM_TREASURY_TIER_MULT as CLIENT_REALM_TREASURY_MULT } from "@/utils/civDemographics";
-import {
+import { HORROR as CLIENT_HORROR, HORROR_GEM as CLIENT_HORROR_GEM, HORROR_LEVELS as CLIENT_HORROR_LEVELS } from "../src/utils/horror";
+import { horrorStatsFor, HORROR, HORROR_LEVELS } from "../server/src/horrorRules";
+import { HORROR_NPC_TYPE,
   COMBAT,
   COMBAT_TRAITS,
   CIV_MODIFIERS,
@@ -124,6 +126,7 @@ import * as CLIENT_CHAMPION from "@/utils/champion";
 import * as CLIENT_MUSTER from "@/utils/muster";
 import * as MUSTER from "../server/src/musterRules";
 import { ARMORY_RULES as CLIENT_ARMORY_RULES, ARMORY_SETS as CLIENT_ARMORY_SETS, ARMORY_TARGET_SHARE as CLIENT_ARMORY_TARGET_SHARE, EPIC_GEM as CLIENT_EPIC_GEM } from "@/utils/armory";
+import { WORLD_SCALE } from "../server/src/worldGeometry";
 
 /* ------------------------------------------------------------------------- */
 /* TWEAKS — try changes here, then copy them into the game files             */
@@ -1183,7 +1186,8 @@ console.log(`  Orcs fight with ×${bloodOmen.civAtkMult.orc} ATK and Elves ×${b
 // 🌪️ Tempest Roads against what a march spends on round-trip rations (City Hall 12, one full march)
 line("World disasters — Tempest Roads: marchers lost setting off vs. round-trip rations (City Hall 12, one full march)");
 const TEMPEST_LEVEL = 12;
-const DISTANCES = [60, 120, 200];
+/** Typical march lengths (map units, at today's world scale: the same trips as 60 / 120 / 200 before the realm grew) */
+const DISTANCES = [60, 120, 200].map((d) => Math.round(d * WORLD_SCALE));
 console.log(`  ${padR("civ", 12)}${pad("march", 8)}${pad("lost (avg, max)", 20)}${pad("lost at mob. cost", 20)}${DISTANCES.map((d) => pad(`rations ${d}u`, 14)).join("")}`);
 const tempestFails: string[] = [];
 let tempestMax = 0;
@@ -1819,8 +1823,66 @@ const hoardWorth = (h: { gold: number; iron: number; stone: number; lumber: numb
 const hoardTiers = (["common", "uncommon", "rare", "epic"] as const).map((t) => hoardWorth(REALM_CONQUEST_HOARD[t]));
 const hoardRises = hoardTiers.every((v, i) => i === 0 || v > hoardTiers[i - 1]) && hoardWorth(REALM_CONQUEST_HOARD.epic) > hoardWorth(BOSS_HOARD);
 const mirrorOk = JSON.stringify(CLIENT_MODIFIERS) === JSON.stringify(CIV_MODIFIERS);
+/* ------------------------------------------------------------------------- */
+/* 🌑 Xal'Vorath, the Overseers' Wrath                                        */
+/* ------------------------------------------------------------------------- */
+
+/** Tries one rally fits into the hour at the gates: wait, march, fight, march home, about 15 minutes each */
+const HORROR_HOUR_TRIES = 4;
+
+function horrorFight(level: number, civ: CivilizationType, members: number, ch: number, split = 1): { tries: number; firstShare: number; lossShare: number } {
+  const u = horrorStatsFor(level, split);
+  let hp = u.hp;
+  let firstShare = 0;
+  let lossShare = 0;
+  const army = marchOf(civ, ch);
+  for (let attempt = 1; attempt <= 60; attempt++) {
+    const base = bossDefender(HORROR_NPC_TYPE, 1);
+    const def: LiveDefenderState = { ...base, unit: { hp: u.hp, atk: u.atk, def: u.def }, carryDamageTaken: 1 - hp / u.hp, boss: { ...base.boss!, maxHp: u.hp, hpAtStart: hp } };
+    const r = liveFight(civ, Array(members).fill(army), def, 1 + RALLY_COORDINATION_ATK * (members - 1), `horror-${level}-${civ}-${members}-${ch}-${split}-${attempt}`, TWEAKS.titles, bossDamageMult(ch, civ), null, members > 1);
+    const after = r.def.count <= 0 ? 0 : u.hp * (r.def.count - r.def.carryDamageTaken);
+    if (attempt === 1) {
+      firstShare = (hp - after) / u.hp;
+      lossShare = r.lost / (army * members);
+    }
+    hp = after;
+    if (hp <= 0) return { tries: attempt, firstShare, lossShare };
+  }
+  return { tries: 61, firstShare, lossShare };
+}
+
+/** Battles for a whole civilization's rallies (each one rally of `members` rulers): the number of rallies needed to fit the hour */
+const ralliesNeeded = (tries: number) => Math.ceil(tries / HORROR_HOUR_TRIES);
+
+line(`🌑 Xal'Vorath: rallies of 5 rulers against each Level (${HORROR_HOUR_TRIES} tries fit its hour at the gates) · tries to kill (first try's HP share, marchers lost)`);
+console.log(`  ${padR("Level", 10)}${[15, 18, 20, 25].map((ch) => pad(`City Hall ${ch}`, 24)).join("")}`);
+const horrorTable: Record<number, Record<number, number>> = {};
+for (const level of [1, 2, 3, 4, 5]) {
+  horrorTable[level] = {};
+  const cells = [15, 18, 20, 25].map((ch) => {
+    const runs = MORTALS.map((civ) => horrorFight(level, civ, 5, ch));
+    const tries = Math.max(...runs.map((r) => r.tries));
+    horrorTable[level][ch] = tries;
+    const avg = (fn: (r: (typeof runs)[number]) => number) => runs.reduce((a, r) => a + fn(r), 0) / runs.length;
+    return pad(`${tries > 60 ? ">60" : tries} tries (${Math.round(avg((r) => r.firstShare) * 100)}%, -${Math.round(avg((r) => r.lossShare) * 100)}%)`, 24);
+  });
+  console.log(`  ${padR(String(level), 10)}${cells.join("")}`);
+}
+// Split among 3 kingdoms: a third of the stats each
+const splitTries = Math.max(...MORTALS.map((civ) => horrorFight(5, civ, 5, 20, 3).tries));
+console.log(`  Level 5 split among 3 kingdoms: ${splitTries} tries for a rally of 5 at City Hall 20`);
+
+const horrorChecks: Check[] = [
+  { ok: JSON.stringify(CLIENT_HORROR_LEVELS) === JSON.stringify(HORROR_LEVELS) && CLIENT_HORROR.XP_PER_DAY === HORROR.XP_PER_DAY && CLIENT_HORROR.DAYS === HORROR.DAYS && CLIENT_HORROR.MAX_TARGETS === HORROR.MAX_TARGETS && CLIENT_HORROR.MAX_LEVEL === HORROR.MAX_LEVEL && CLIENT_HORROR.TREASURY_DEVOURED === HORROR.TREASURY_DEVOURED && CLIENT_HORROR.LATE_SEND_HOUR === HORROR.LATE_SEND_HOUR && CLIENT_HORROR_GEM === HORROR.GEM && CLIENT_HORROR.APPROACH_DAYS * 86_400_000 === HORROR.APPROACH_MS && CLIENT_HORROR.SIEGE_HOURS * 3_600_000 === HORROR.SIEGE_MS, text: "Client copy of Xal'Vorath's numbers (src/utils/horror.ts) matches the server" },
+  { ok: Object.values(HORROR_LEVELS).every((u, i, all) => i === 0 || (u.hp > all[i - 1].hp && u.atk > all[i - 1].atk && u.def > all[i - 1].def)), text: "Every Level of Xal'Vorath is stronger than the last" },
+  { ok: ralliesNeeded(horrorTable[3][20]) <= 2 && ralliesNeeded(horrorTable[3][18]) <= 2 && ralliesNeeded(horrorTable[3][15]) <= 4, text: `Level 3 falls to a whole civilization's rallies in its hour: 2 rallies of City Hall 18–20 rulers (${horrorTable[3][18]} and ${horrorTable[3][20]} tries), at most 4 at City Hall 15 (${horrorTable[3][15]} tries)` },
+  { ok: ralliesNeeded(horrorTable[5][20]) >= 3 && ralliesNeeded(horrorTable[5][20]) <= 5, text: `Level 5 needs most of a civilization: 3–5 rallies of City Hall 20 rulers at once in its hour (${horrorTable[5][20]} tries, ${ralliesNeeded(horrorTable[5][20])} rallies)` },
+  { ok: horrorTable[1][20] <= HORROR_HOUR_TRIES, text: `Level 1 falls to one rally of City Hall 20 rulers in its hour (${horrorTable[1][20]} tries)` },
+  { ok: splitTries < horrorTable[5][20], text: `A split Wrath is weaker on each kingdom (Level 5 ÷ 3: ${splitTries} tries vs ${horrorTable[5][20]})` }
+];
+
 line("Checks");
-checks.push(...pvpChecks, ...gatherChecks, ...rallyChecks, ...bossChecks, ...moonwellChecks, ...npckChecks, ...overseerChecks, ...armyChecks, ...plunderChecks, ...wallChecks, ...burnChecks, ...recoveryChecks, ...mobChecks, ...disasterChecks, ...mercChecks, ...armoryChecks, ...enduranceChecks, ...championChecks);
+checks.push(...pvpChecks, ...gatherChecks, ...rallyChecks, ...bossChecks, ...horrorChecks, ...moonwellChecks, ...npckChecks, ...overseerChecks, ...armyChecks, ...plunderChecks, ...wallChecks, ...burnChecks, ...recoveryChecks, ...mobChecks, ...disasterChecks, ...mercChecks, ...armoryChecks, ...enduranceChecks, ...championChecks);
 if (!applied.some((a) => a.includes("modifiers"))) {
   checks.push({ ok: mirrorOk, text: `Client copy of CIV_MODIFIERS (src/utils/civDemographics.ts) matches the server${mirrorOk ? "" : " — copy warConfig.ts's list over"}` });
   checks.push({ ok: realmMirrorOk, text: `Client copy of the free realms' tier treasury and conquest hoards (src/utils/civDemographics.ts) matches the server${realmMirrorOk ? "" : " — copy warConfig.ts's REALM_CONQUEST_HOARD / REALM_TREASURY_TIER_MULT over"}` });

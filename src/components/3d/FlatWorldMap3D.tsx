@@ -1,6 +1,8 @@
-import { useState, useMemo, useRef, useEffect, useCallback } from "react";
+import { useState, useMemo, useRef, useEffect, useCallback, startTransition } from "react";
+import { nextPaint, setLoadStage } from "@/utils/loadingScreen";
 import { isOwnCamp } from "@/utils/mercenaries";
 import { fogRange, fogText } from "@/utils/fog";
+import { horrorByNpc, horrorSeed, horrorWait } from "@/utils/horror";
 import { useFrame, useThree } from "@react-three/fiber";
 import { Html } from "@react-three/drei";
 import * as THREE from "three";
@@ -28,7 +30,7 @@ import { FireFx, FireSite, FIRE_GLOW } from "./FireFx";
 import { GATE_MODEL_TYPES, gateWallPoints } from "./world/gates";
 import { ArchonSeal } from "@/components/ui/CivFrame";
 import { LANDMARK_MODEL_TYPES, WATER_LANDMARK_TYPES } from "./world/landmarks";
-import { REALM_STAGE_SCALE, WATER_REALM_TYPES, realmStageLabel } from "./world/realmTypes";
+import { REALM_STAGE_SCALE, WATER_REALM_TYPES, realmStageLabel, type HorrorPlacement } from "./world/realmTypes";
 import { breakDown, landmarkStateLabel, landmarkStepOf } from "./world/landmarkStages";
 import { InstancedParts } from "./city/InstancedParts";
 import { GATHER_RADIUS, Islet, WarParties } from "./world/WarParties";
@@ -54,12 +56,17 @@ import { useOnlineIds } from "@/utils/presence";
 const ONLINE_GLOW = { tier: "epic" as const, color: "#f8fafc", accent: "#e0f2fe" };
 import { skyWeather } from "./skyState";
 import { seasonParts, seasonTerrain, WORLD_FOLIAGE } from "@/utils/seasonTint";
+import { VOID_GATE, VOID_SCALE, WORLD_SCALE } from "@/utils/worldGeometry";
+import { openVoidGateTeaser } from "@/utils/voidGate";
+import { VoidGate } from "./world/VoidGate";
 
 interface FlatWorldMap3DProps {
   kingdoms: DeveloperKingdom[];
   worldMap: FlatWorldMapData | null;
   /** Roving encounters of the current roving window; swapped in place without rebuilding the world */
   rovingNPCs?: MapNPC[];
+  /** Xal'Vorath out in the realm: a boss that walks, kept apart so a step of its road never rebuilds the roving batch */
+  horrorNPCs?: MapNPC[];
   /** Touched resource nodes / chests: emptied ones are hidden */
   nodeStatuses?: Record<string, NodeStatus>;
   /** World bosses' shared HP (hover badge); fallen ones carry `slumberUntil` on their MapNPC */
@@ -108,17 +115,51 @@ let builtWorld: BuiltWorld | null = null;
 const isWorldBuilt = (worldMap: FlatWorldMapData | null, npcCount: number) =>
   builtWorld !== null && builtWorld.worldMap === worldMap && builtWorld.npcCount === npcCount;
 
-function buildWorld(worldMap: FlatWorldMapData | null, npcCount: number): BuiltWorld {
+/** The longest the world build works before letting the page breathe (paint, input, the loading screen) */
+const BUILD_SLICE_MS = 40;
+
+/**
+ * Builds the continent in pieces, with a paint between them, so the page is never blocked for the whole build at once
+ * and the loading screen's bar moves on as each piece is done (each reports the point the bar reaches when it ends,
+ * before it runs). Null if `alive()` turned false meanwhile (the map unmounted, or newer data came).
+ */
+async function buildWorld(worldMap: FlatWorldMapData | null, npcCount: number, alive: () => boolean): Promise<BuiltWorld | null> {
   if (builtWorld && isWorldBuilt(worldMap, npcCount)) return builtWorld;
   // One continuous continent: provinces blend into each other through the buffer biomes
+  setLoadStage("land", 0.4);
+  await nextPaint();
+  if (!alive()) return null;
   const terrain = createTerrain(worldMap);
   // Extra NPC territories: one per four developers, each placed where its terrain fits
+  setLoadStage("land", 0.6);
+  await nextPaint();
+  if (!alive()) return null;
   const terrainNPCs = generateTerrainNPCs(terrain, worldMap, npcCount);
+  // The ground's mesh is the longest piece: built in slices of about a frame's work, the bar moving with it
+  const steps = terrain.geometrySteps();
+  let step = steps.next();
+  let sliceStart = performance.now();
+  while (!step.done) {
+    if (performance.now() - sliceStart > BUILD_SLICE_MS) {
+      setLoadStage("land", 0.6 + 0.3 * step.value);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      if (!alive()) return null;
+      sliceStart = performance.now();
+    }
+    step = steps.next();
+  }
+  const terrainGeometry = step.value;
+  setLoadStage("land", 1);
+  await nextPaint();
+  if (!alive()) {
+    terrainGeometry.dispose();
+    return null;
+  }
   const next: BuiltWorld = {
     worldMap,
     npcCount,
     terrain,
-    terrainGeometry: terrain.geometry(),
+    terrainGeometry,
     terrainNPCs,
     scatter: buildWorldScatter(terrain, worldMap, terrainNPCs)
   };
@@ -189,6 +230,51 @@ function useRefreshHtmlLabelsInDev() {
 /* 1. ARCANE RIFT (floating islands above the crater in the continent)       */
 /* ========================================================================= */
 
+/** The Void Gate stands this many times its Codex size on the map */
+const VOID_GATE_MAP_SCALE = 1.5;
+
+/**
+ * 🌀 The Void Gate on the map (GAME_GUIDE §10 *The Void Gate*): the mythic gate at its fixed spot in the Voidrift's open
+ * outer band, south of the Core, facing the map camera. Its climb is not in the game yet: clicking it opens the
+ * teaser window. 7 draws in Normal and HD (VoidGate.tsx), all motion on the GPU.
+ */
+function MapVoidGate({ terrain, hd, label }: { terrain: Terrain; hd: boolean; label: boolean }) {
+  const y = terrain.height(VOID_GATE.x, VOID_GATE.z);
+  return (
+    <group
+      position={[VOID_GATE.x, y - 0.05, VOID_GATE.z]}
+      scale={VOID_GATE_MAP_SCALE}
+      onClick={(e) => {
+        e.stopPropagation();
+        sound.playClick();
+        openVoidGateTeaser();
+      }}
+      onPointerOver={(e) => {
+        e.stopPropagation();
+        document.body.style.cursor = "pointer";
+      }}
+      onPointerOut={() => {
+        document.body.style.cursor = "";
+      }}
+    >
+      <VoidGate key={hd ? "hd" : "normal"} hd={hd} seed="void-gate-map" />
+      {/* What the pointer hits: the arch and its opening (the parts themselves are instanced and thin) */}
+      <mesh position={[0, 3.6, 0]}>
+        <boxGeometry args={[5.2, 7.4, 2.2]} />
+        <meshBasicMaterial transparent opacity={0} depthWrite={false} />
+      </mesh>
+      {label && (
+        <Html zIndexRange={[15, 0]} position={[0, 8.6, 0]} center distanceFactor={70} style={{ pointerEvents: "none" }}>
+          <div className="select-none whitespace-nowrap flex flex-col items-center gap-0.5 drop-shadow-[0_2px_4px_rgba(0,0,0,0.9)]">
+            <span className="font-medieval tracking-widest uppercase text-violet-200 text-lg">The Void Gate</span>
+            <span className="px-2 py-0.5 rounded-full border border-violet-400/70 bg-violet-950/80 text-[10px] font-bold uppercase tracking-[0.2em] text-violet-100">Coming soon</span>
+          </div>
+        </Html>
+      )}
+    </group>
+  );
+}
+
 /**
  * Arcane Province: glowing rift on the crater floor with obsidian shards orbiting high above. After dark the
  * obsidian smoulders violet from within and each shard wears a halo, so the ring reads against the night sky
@@ -210,8 +296,9 @@ function ArcaneRift({ province, floorY }: { province: MapProvince; floorY: numbe
     () =>
       Array.from({ length: 7 }, (_, i) => {
         const angle = (i / 7) * Math.PI * 2;
-        const radius = 12 + (i % 3) * 2;
-        return { x: Math.cos(angle) * radius, z: Math.sin(angle) * radius, y: (i % 2) * 1.6, size: 1.2 + (i % 3) * 0.5, rot: i * 0.9 };
+        // Round the wider rift: they circle over the castles' ring (VOID_SCALE)
+        const radius = (12 + (i % 3) * 2) * WORLD_SCALE * VOID_SCALE;
+        return { x: Math.cos(angle) * radius, z: Math.sin(angle) * radius, y: (i % 2) * 1.6, size: (1.2 + (i % 3) * 0.5) * 1.3, rot: i * 0.9 };
       }),
     []
   );
@@ -295,7 +382,8 @@ const groundReach = (npc: MapNPC) => {
  * circle is open water)
  */
 const needsIslet = (npc: MapNPC, terrain: Terrain) => {
-  if (WATER_LANDMARK_TYPES.has(npc.type) || isGeneratedNPC(npc.type)) return false;
+  // Xal'Vorath hangs over its well of dust: it crosses the water without touching it
+  if (WATER_LANDMARK_TYPES.has(npc.type) || isGeneratedNPC(npc.type) || npc.horrorPhase) return false;
   if (terrain.height(npc.x, npc.z) < SEA_LEVEL + 0.15) return true;
   // Only a node or treasure is judged by its work circle too (a sea boss rising from a pad keeps no islet)
   if (!GATHERED.has(npc.category ?? "")) return false;
@@ -567,6 +655,8 @@ function MapNPC3D({
   const hostile = npc.category === "mob" || npc.category === "bandit" || HOSTILE_NPC_TYPES.has(npc.type);
   const slumbering = npc.category === "boss" && npc.slumberUntil !== undefined;
   const hpPct = boss && boss.maxHp ? Math.round((boss.hp / boss.maxHp) * 100) : 100;
+  // Xal'Vorath's card counts down from when the hover began
+  const horror = hovered && npc.horrorPhase ? horrorByNpc(npc.id) : undefined;
   const ascended = npc.type === "ruins-ascended";
   // A model drawn on its own (a hand-tuned wild sight) takes its HD version like the batch does
   const hdModels = useHd("models");
@@ -593,7 +683,8 @@ function MapNPC3D({
         </mesh>
       ) : (
         // The risen Eye floats high: growing it about the ground would lift it out from under the cursor
-        <group scale={(hovered && !ascended ? 1.2 : 1.0) * tierScale}>
+        // Xal'Vorath faces the way it walks; in a fight its rig turns on its attackers by itself
+        <group scale={(hovered && !ascended ? 1.2 : 1.0) * tierScale} rotation={[0, npc.horrorPhase && !fighting ? (npc.horrorHeading ?? 0) : 0, 0]}>
           <Spectral key={npc.type} active={slumbering}>
             <NPCModel npc={npc} slumbering={slumbering} fighting={fighting} ruined={burning && GATE_MODEL_TYPES.has(npc.type)} hd={hdModels} />
           </Spectral>
@@ -657,6 +748,11 @@ function MapNPC3D({
                   <span className="text-amber-300">{hpPct}%</span>
                 </div>
                 {boss.vengeance > 0 && <div className="text-[9px] font-mono font-bold text-orange-300">🔥 Vengeance ×{boss.vengeance}: +{boss.vengeance * 10}% all stats</div>}
+                {horror && (
+                  <div className="text-[9px] font-mono font-bold text-violet-300">
+                    {horror.phase === "siege" ? `🔥 Burns ${horror.targetName}'s kingdom in ${horrorWait(horror.siegeEndsAt - hoverAt)}` : `🌑 At ${horror.targetName}'s gates in ${horrorWait(horror.arrivesAt - hoverAt)}`}
+                  </div>
+                )}
               </div>
             )}
             {slumbering && (
@@ -783,14 +879,15 @@ function VoidNpcCitadel({ spire, y, hideTooltips, onSelect }: { spire: Nethergar
 /* ========================================================================= */
 
 /**
- * Builds the continent behind a loader: the build blocks the page for a moment, so the loader
- * is painted first and the build runs right after. The current map stays on screen while a
+ * Builds the continent behind the loading screen: the build runs in pieces with a paint between them, and the map
+ * mounts in a transition once it is built. The current map stays on screen while a
  * new one (e.g. after a sync) is built, and a cached world is reused with no loader at all.
  */
 export function FlatWorldMap3D(props: FlatWorldMap3DProps) {
   const { worldMap, onLoadingChange } = props;
   const npcCount = Math.ceil(props.kingdoms.length / 4);
-  const [world, setWorld] = useState<BuiltWorld | null>(() => (worldMap && isWorldBuilt(worldMap, npcCount) ? builtWorld : null));
+  // Null at first even with the world cached (coming back from a city): the map then mounts in a transition too
+  const [world, setWorld] = useState<BuiltWorld | null>(null);
 
   useEffect(() => {
     if (!worldMap) {
@@ -798,14 +895,24 @@ export function FlatWorldMap3D(props: FlatWorldMap3DProps) {
       return;
     }
     if (world && world.worldMap === worldMap && world.npcCount === npcCount) return;
+    onLoadingChange?.(true);
     if (isWorldBuilt(worldMap, npcCount)) {
-      setWorld(builtWorld);
+      const cached = builtWorld;
+      setLoadStage("castles");
+      startTransition(() => setWorld(cached));
       return;
     }
-    onLoadingChange?.(true);
-    // Give the browser a moment to paint the loader before the blocking build
-    const t = setTimeout(() => setWorld(buildWorld(worldMap, npcCount)), 60);
-    return () => clearTimeout(t);
+    // The build runs in pieces behind the loading screen; the map's components then mount in a transition, which React
+    // renders in small slices instead of one long block
+    let alive = true;
+    buildWorld(worldMap, npcCount, () => alive).then((built) => {
+      if (!alive || !built) return;
+      setLoadStage("castles");
+      startTransition(() => setWorld(built));
+    });
+    return () => {
+      alive = false;
+    };
   }, [worldMap, npcCount, world, onLoadingChange]);
 
   // Never leave the loader up if the map unmounts mid-build (e.g. entering a city)
@@ -827,10 +934,14 @@ const castleFire = (id: string, x: number, y: number, z: number, scale: number):
 
 const noHero = (_type: string) => false;
 
+/** How tall its hover and click target stands in HD */
+const HORROR_HIT_HEIGHT = 9;
+
 function WorldMapContent({
   kingdoms,
   world,
   rovingNPCs = NO_NPCS,
+  horrorNPCs = NO_NPCS,
   nodeStatuses = NO_STATUSES,
   bossStatuses = NO_BOSSES,
   npcKingdomStatuses = NO_NPC_KINGDOMS,
@@ -923,7 +1034,7 @@ function WorldMapContent({
     return (worldMap?.npcs ?? []).map((n) => (n.landmarkState ? { ...n, landmarkStep: steps[i++] } : n));
   }, [worldMap, landmarkSteps]);
   // An emptied resource node is gone for everyone until the next day's nodes
-  const staticNPCs = useMemo(() => [...mapNPCs.filter((n) => !nodeStatuses[n.id]?.emptied), ...terrainNPCs], [mapNPCs, terrainNPCs, nodeStatuses]);
+  const staticNPCs = useMemo(() => [...mapNPCs.filter((n) => !nodeStatuses[n.id]?.emptied), ...terrainNPCs, ...horrorNPCs], [mapNPCs, terrainNPCs, nodeStatuses, horrorNPCs]);
   const allNPCs = useMemo(() => [...staticNPCs, ...rovingNPCs], [staticNPCs, rovingNPCs]);
   // Islets under land NPCs over water: drawn with the rings, and stood on by armies working or fighting there
   const islets = useMemo(() => isletsOf(allNPCs, terrain), [allNPCs, terrain]);
@@ -1043,12 +1154,12 @@ function WorldMapContent({
   // Coming back from a city: frame the whole realm again (cities may have pushed the fog back)
   useEffect(() => {
     if (sceneFog instanceof THREE.Fog) {
-      sceneFog.near = 80;
-      sceneFog.far = 260;
+      sceneFog.near = 95;
+      sceneFog.far = 315;
     }
     if (!controls) return;
     controls.target.set(0, 0, 0);
-    camera.position.set(0, 85, 95);
+    camera.position.set(0, 100, 112);
     controls.update();
   }, [controls, camera, sceneFog]);
 
@@ -1100,6 +1211,32 @@ function WorldMapContent({
     }
     return live;
   }, [allNPCs, combat, isBossHero]);
+  // HD: Xal'Vorath as its hand-built model, every one out in the realm (the server allows HORROR.MAX_TARGETS at once).
+  // Keyed, so a poll that changes nothing about them never touches it
+  const heroHorrorKey = useMemo(
+    () =>
+      heroes
+        ? JSON.stringify(
+            horrorNPCs.map((n): HorrorPlacement => {
+              const foe = combat.get(n.id);
+              const seed = horrorSeed(n.id);
+              return {
+                id: n.id,
+                x: n.x,
+                y: npcY(n, terrain),
+                z: n.z,
+                action: foe ? "attacking" : n.horrorPhase === "siege" ? "idle" : "walking",
+                yaw: foe ? Math.atan2(foe.x - n.x, foe.z - n.z) : (n.horrorHeading ?? 0),
+                offset: seed * 40,
+                pace: 0.85 + ((seed * 7) % 1) * 0.3
+              };
+            })
+          )
+        : "[]",
+    [heroes, horrorNPCs, terrain, combat]
+  );
+  const heroHorrors = useMemo<HorrorPlacement[]>(() => JSON.parse(heroHorrorKey), [heroHorrorKey]);
+  const heroHorrorIds = useMemo(() => new Set(heroHorrors.map((h) => h.id)), [heroHorrors]);
   // Developer castles plus the NPC void kingdoms holding open Voidrift slots
   const allCastles = useMemo<CastlePlacement[]>(
     () => [
@@ -1262,6 +1399,7 @@ function WorldMapContent({
       {worldMap && (
         <ArcaneRift province={worldMap.provinces.arcane} floorY={terrain.height(worldMap.provinces.arcane.centerX + 5, worldMap.provinces.arcane.centerZ)} />
       )}
+      <MapVoidGate terrain={terrain} hd={hdModels} label={!hideTooltips} />
 
       {/* Region names */}
       {!hideTooltips &&
@@ -1312,8 +1450,8 @@ function WorldMapContent({
           fighting={combat.get(npc.id)}
           burning={burningNpcs.has(npc.id)}
           camp={isOwnCamp(npc.id, homeCiv)}
-          batched={staticModels.heights.has(npc.id) || siteModels.heights.has(npc.id) || (heroes && (isBatchedHero(npc.type) || isBossHero(npc.type)))}
-          hitHeight={staticModels.heights.get(npc.id) ?? siteModels.heights.get(npc.id) ?? hdm?.heroHeight(npc.type)}
+          batched={staticModels.heights.has(npc.id) || siteModels.heights.has(npc.id) || (heroes && (isBatchedHero(npc.type) || isBossHero(npc.type))) || heroHorrorIds.has(npc.id)}
+          hitHeight={staticModels.heights.get(npc.id) ?? siteModels.heights.get(npc.id) ?? (heroHorrorIds.has(npc.id) ? HORROR_HIT_HEIGHT : hdm?.heroHeight(npc.type))}
           hideTooltips={hideTooltips}
           onSelect={() => onSelectNPC && onSelectNPC(npc)}
         />
@@ -1341,7 +1479,7 @@ function WorldMapContent({
       {/* Every castle model, drawn with one instanced mesh per castle part */}
       <WorldCastles castles={allCastles} hoveredId={hoveredKingdomId} skipStyles={heroes ? HERO_STYLES : undefined} />
       {/* HD graphics: the Archon's Empyrean as its hand-built HD model (in place of its map kit) */}
-      {hdm && (heroCastles.length > 0 || heroSites.length > 0 || bossSites.length > 0) && <hdm.HeroMount castles={heroCastles} sites={heroSites} bosses={bossSites} bossLive={bossLive} />}
+      {hdm && (heroCastles.length > 0 || heroSites.length > 0 || bossSites.length > 0 || heroHorrors.length > 0) && <hdm.HeroMount castles={heroCastles} sites={heroSites} bosses={bossSites} bossLive={bossLive} horrors={heroHorrors} />}
       <ShieldDomes domes={domes} />
       <StormClouds clouds={storms} />
       <Fireworks sites={fireworks} hd={hdModels} />

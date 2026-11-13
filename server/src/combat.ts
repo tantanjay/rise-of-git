@@ -260,6 +260,8 @@ export interface LiveAttackerStack extends ArtsBearer {
   civ: CivilizationType;
   count: number;
   initialCount: number;
+  /** The march left the battle before it ended (recalled, fell back or wiped out): it takes no plunder at the end */
+  left?: boolean;
   joinedRound: number;
   roundsFought: number;
   carryDamageTaken: number;
@@ -359,8 +361,11 @@ export interface LiveDefenderState extends ArtsBearer {
   gear?: GearStats;
   /** 🦸 The ruler's champion leading the home garrison while it is home (attached each round by the war engine; its kit is `kit`) */
   champion?: ChampionInBattle;
-  /** 🦸 The champion who led the home garrison in this battle, kept for the report after it left or fell (bookkeeping) */
-  championLed?: { id: string; userId: string; name: string; level: number; fell?: boolean };
+  /**
+   * 🦸 The champion who led the home garrison in this battle, kept for the report after it left or fell (bookkeeping):
+   * `roundsLed` it led the walls, `away` while it is out at the head of a march (it doesn't fall with a garrison it left)
+   */
+  championLed?: { id: string; userId: string; name: string; level: number; fell?: boolean; away?: boolean; roundsLed?: number };
   /** 🌙 Moonwell Healers: of the home garrison's `totalLosses`, how many were settled as dead and as wounded (bookkeeping) */
   dead?: number;
   wounded?: number;
@@ -765,7 +770,17 @@ export function stepBattleRound(
       let cut = 0;
       for (const stack of activeStacks) {
         if (stack.count <= 0) continue;
-        const n = Math.min(stack.count, Math.max(1, Math.floor(stack.count * homeCull)));
+        let n: number;
+        if (stack.kit?.boss && stack.initialCount === 1) {
+          // One colossal unit (a boss in the Sparring Grounds) loses that share of its HP, as a defending boss does
+          const hp = Math.max(1e-9, sideUnit(stackSide(stack), groups[0].side, "attacking").hp);
+          stack.carryDamageTaken += homeCull * hp;
+          n = Math.min(stack.count, Math.floor(stack.carryDamageTaken / hp));
+          stack.carryDamageTaken -= n * hp;
+          if (n <= 0) continue;
+        } else {
+          n = Math.min(stack.count, Math.max(1, Math.floor(stack.count * homeCull)));
+        }
         stack.count -= n;
         stack.totalLosses += n;
         stackLosses[stack.marchId] = (stackLosses[stack.marchId] ?? 0) + n;

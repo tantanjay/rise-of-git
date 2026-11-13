@@ -67,6 +67,7 @@ export const SPELL_LOOKS: Record<string, SpellLook> = {
   // Finales (each world boss has its own)
   dawnbreaker: { name: "Dawnbreaker", emblem: "🌅", charge: "rise", core: "flare", trail: "streak", burst: "sunburst", reaction: "flinch", color: "#fbbf24", hot: "#fffbeb", aim: "enemy", finale: true, voice: "holy" },
   cataclysm: { name: "Cataclysm", emblem: "☄️", charge: "swirl", core: "orb", trail: "flame", burst: "rain", reaction: "flinch", aftermath: "burn", color: "#ef4444", hot: "#fed7aa", aim: "enemy", finale: true, voice: "fire" },
+  the_devouring: { name: "The Devouring", emblem: "🌑", charge: "swirl", core: "orb", trail: "none", burst: "vortex", reaction: "stagger", aftermath: "sunder", color: "#b91c1c", hot: "#fecaca", aim: "enemy", finale: true, voice: "thunder" },
   maelstrom: { name: "Maelstrom", emblem: "🌊", charge: "swirl", core: "none", trail: "none", burst: "vortex", reaction: "stagger", aftermath: "chill", color: "#0ea5e9", hot: "#cffafe", aim: "enemy", finale: true, voice: "water" },
   sandstorm: { name: "Sandstorm", emblem: "🌪️", charge: "swirl", core: "none", trail: "none", burst: "dust", reaction: "stagger", aftermath: "sunder", color: "#d6a35c", hot: "#fef3c7", aim: "enemy", finale: true, voice: "sand" },
   wild_hunt: { name: "Wild Hunt", emblem: "🐺", charge: "rise", core: "none", trail: "none", burst: "pack", reaction: "flinch", aftermath: "bleed", color: "#4ade80", hot: "#ecfccb", aim: "enemy", finale: true, voice: "beast" },

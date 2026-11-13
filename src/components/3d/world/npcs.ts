@@ -8,8 +8,9 @@ import { buildRealmModel } from "./realms";
 import { REALM_MODEL_TYPES } from "./realmTypes";
 import { LEGENDARY_LANDMARK_TYPES } from "./legendaryLandmarks";
 import { GATE_MODEL_TYPES, gateWallPoints, gateYaw } from "./gates";
+import { FJORD_WATER, PLAY_HALF } from "@/utils/worldGeometry";
 import { landmarkStepOf, ruinGate, stageLandmark } from "./landmarkStages";
-import { buildLadderSpawn, faceAt, isLadderSpawn, shade } from "./spawnModels";
+import { LEGEND_TYPES, buildLadderSpawn, buildLegend, faceAt, isLadderSpawn, isLegend, shade } from "./spawnModels";
 
 /**
  * Wandering NPC territories that scale with the realm: one per four developers.
@@ -308,7 +309,8 @@ export const SPAWN_MODEL_TYPES = new Set<string>([
   "res-mana",
   "res-fleece",
   "res-dragonstone",
-  "res-motherlode"
+  "res-motherlode",
+  ...LEGEND_TYPES
 ]);
 
 /** Higher tiers stand a little larger on the map so rarity reads at a glance */
@@ -359,9 +361,24 @@ function regionName(dom: RegionKind, worldMap: FlatWorldMapData, x: number, z: n
   return buffer?.name ?? "The Wilds";
 }
 
+/** The scenery site that suits a region when no kind's own rules fit the spot (a slope, a shore, the Wild Rim) */
+const FALLBACK_KIND: Partial<Record<RegionKind, GeneratedNPCType>> = {
+  human: "tavern",
+  elf: "fairy_ring",
+  forest: "hunter_lodge",
+  dwarf: "hunter_lodge",
+  mountains: "goblin_camp",
+  orc: "goblin_camp",
+  desert: "caravan",
+  arcane: "wizard_tower",
+  sea: "fishing_village"
+};
+
 /**
- * Deterministic NPC placement: candidates and type order come from the map seed,
- * so adding developers appends new NPCs without moving existing ones.
+ * Deterministic scenery sites. On land they stand on the spots the server picked (`worldMap.scenery`, on the map's
+ * occupancy list, so no spawn ever lands on one), each given the kind that fits its ground, in a type order from the map
+ * seed so the kinds stay varied; at sea (sea monsters, mermaid rocks) they are picked here, off the fjord's open water
+ * where the crews afloat rove. Adding developers appends new sites without moving existing ones.
  */
 export function generateTerrainNPCs(terrain: Terrain, worldMap: FlatWorldMapData | null, count: number): MapNPC[] {
   if (!worldMap || count <= 0) return [];
@@ -372,11 +389,7 @@ export function generateTerrainNPCs(terrain: Terrain, worldMap: FlatWorldMapData
     for (const k in w) if (w[k as RegionKind] > w[best]) best = k as RegionKind;
     return best;
   };
-
-  const sites: Site[] = [];
-  for (let i = 0; i < 900; i++) {
-    const x = range(rng, -80, 80);
-    const z = range(rng, -80, 80);
+  const siteAt = (x: number, z: number): Site => {
     const h = terrain.height(x, z);
     const w = terrain.weights(x, z);
     const ring = [
@@ -387,16 +400,25 @@ export function generateTerrainNPCs(terrain: Terrain, worldMap: FlatWorldMapData
     ].map(([dx, dz]) => terrain.height(x + dx, z + dz));
     const coast = h > SEA_LEVEL && ring.some((rh) => rh < SEA_LEVEL - 0.2);
     const flat = ring.every((rh) => Math.abs(rh - h) < 1.1);
-    sites.push({ x, z, h, dom: dominant(w), w, coast, flat });
-  }
+    return { x, z, h, dom: dominant(w), w, coast, flat };
+  };
 
+  // Land: the server's spots, in order (a new spot is appended as the realm grows)
+  const landSites = (worldMap.scenery ?? []).slice(0, count).map((p) => siteAt(p.x, p.z));
+  // Sea: candidates in open water, clear of the fjord's open middle, the castles and the map's NPCs
   const blockers: Array<{ x: number; z: number; r: number }> = [
     ...Object.values(worldMap.kingdomPlacements).map((p) => ({ x: p.x, z: p.z, r: 10 })),
     ...worldMap.npcs.map((n) => ({ x: n.x, z: n.z, r: 16 })),
-    // Clear of the frontier gates' border walls
-    ...worldMap.npcs.filter((n) => GATE_MODEL_TYPES.has(n.type)).flatMap((n) => gateWallPoints(n.type, n.x, n.z).map((p) => ({ ...p, r: 6 })))
+    ...(worldMap.scenery ?? []).map((p) => ({ x: p.x, z: p.z, r: 9 }))
   ];
-  const clear = (x: number, z: number) => blockers.every((b) => Math.hypot(b.x - x, b.z - z) > b.r);
+  const seaSites: Site[] = [];
+  for (let i = 0; i < 900; i++) {
+    const x = range(rng, -PLAY_HALF - 8, PLAY_HALF + 8);
+    const z = range(rng, -PLAY_HALF - 8, PLAY_HALF + 8);
+    if (z < -FJORD_WATER.from + 3 && z > -FJORD_WATER.to - 3 && Math.abs(x) < FJORD_WATER.across + 3) continue;
+    const s = siteAt(x, z);
+    if (s.h < SEA_LEVEL - 0.3) seaSites.push(s);
+  }
 
   // Shuffle type order once so diversity is spread evenly
   const order = [...NPC_KINDS];
@@ -405,21 +427,11 @@ export function generateTerrainNPCs(terrain: Terrain, worldMap: FlatWorldMapData
     [order[i], order[j]] = [order[j], order[i]];
   }
 
-  const used = new Set<number>();
+  const usedLand = new Set<number>();
+  const usedSea = new Set<number>();
   const nameUse = new Map<GeneratedNPCType, number>();
   const result: MapNPC[] = [];
-  let misses = 0;
-
-  for (let i = 0; result.length < count && misses < order.length * 2; i++) {
-    const kind = order[i % order.length];
-    const idx = sites.findIndex((s, si) => !used.has(si) && kind.fits(s) && clear(s.x, s.z));
-    if (idx < 0) {
-      misses++;
-      continue;
-    }
-    misses = 0;
-    used.add(idx);
-    const site = sites[idx];
+  const add = (kind: NPCKind, site: Site) => {
     const n = nameUse.get(kind.type) ?? 0;
     nameUse.set(kind.type, n + 1);
     const x = Math.round(site.x * 10) / 10;
@@ -435,8 +447,30 @@ export function generateTerrainNPCs(terrain: Terrain, worldMap: FlatWorldMapData
       z,
       region: regionName(site.dom, worldMap, x, z, site.h)
     });
-    blockers.push({ x, z, r: 9 });
+  };
+
+  // Round the kinds: each takes the first free site that fits it (land kinds the server's spots, sea kinds open water)
+  let misses = 0;
+  for (let i = 0; result.length < count && misses < order.length * 2; i++) {
+    const kind = order[i % order.length];
+    const pool = kind.water ? seaSites : landSites;
+    const used = kind.water ? usedSea : usedLand;
+    const idx = pool.findIndex((s, si) => !used.has(si) && kind.fits(s) && (!kind.water || blockers.every((b) => Math.hypot(b.x - s.x, b.z - s.z) > b.r)));
+    if (idx < 0) {
+      misses++;
+      continue;
+    }
+    misses = 0;
+    used.add(idx);
+    add(kind, pool[idx]);
+    if (kind.water) blockers.push({ x: pool[idx].x, z: pool[idx].z, r: 9 });
   }
+  // A land spot no kind's rules fit (a slope, a shore, the Wild Rim) still gets the site that suits its region
+  landSites.forEach((site, si) => {
+    if (usedLand.has(si) || result.length >= count) return;
+    const kind = KIND_BY_TYPE.get(FALLBACK_KIND[site.dom] ?? "tavern");
+    if (kind) add(kind, site);
+  });
 
   return result;
 }
@@ -667,6 +701,8 @@ function cartWheels(add: Add, x: number, z: number, metal: string, mat: Surface)
 function buildSpawnModel(type: string, b: Builder, rng: Rng) {
   // Spawns already redesigned on the rarity ladder
   if (isLadderSpawn(type)) return buildLadderSpawn(type, b, rng);
+  // The wandering legends (the Royal Codex only, for now)
+  if (isLegend(type)) return buildLegend(type, b, rng);
   const add = adder(b);
   switch (type) {
     /* ---------------------------- TREASURES --------------------------- */

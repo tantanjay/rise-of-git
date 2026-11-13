@@ -225,7 +225,7 @@ export function announceBossSlain(params: {
     "boss_slain",
     params.killerId,
     params.bossId,
-    { bossName, killerName, rally: params.rally, dealers: dealers.slice(0, 10), totalDamage: total },
+    { bossName, killerName, rally: params.rally, dealers: dealers.slice(0, 10), dealerCount: dealers.length, totalDamage: total },
     params.now
   );
   createBroadcast({ kind: "boss_slain", title: `${bossName} has fallen`, body: lines.join("\n"), emblem: params.emblem || "🐉", audience: "all", eventId, now: params.now });
@@ -304,6 +304,8 @@ export function noteRulerSeen(userId: string, now = new Date()) {
     }
   }
   db.prepare(`UPDATE users SET last_seen_at = ? WHERE id = ?`).run(now.toISOString(), userId);
+  // One minute with the realm open (this runs at most once a minute): the Watchtower's Game activity
+  db.prepare(`INSERT INTO player_presence (user_id, day, minutes) VALUES (?, ?, 1) ON CONFLICT(user_id, day) DO UPDATE SET minutes = minutes + 1`).run(userId.toLowerCase(), now.toISOString().slice(0, 10));
 }
 
 const CIV_NAMES: Record<string, string> = { human: "👑 Humans", elf: "🏹 Elves", dwarf: "⚒️ Dwarves", orc: "🛡️ Orcs" };

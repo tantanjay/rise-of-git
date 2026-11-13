@@ -24,7 +24,9 @@ export const NOTICE_SEAL: Record<BroadcastKind, { wax: string; rim: string; labe
   chronicle: { wax: "#5b21b6", rim: "#fcd34d", label: "The Weekly Chronicle" },
   mercenary: { wax: "#92400e", rim: "#fbbf24", label: "Mercenaries" },
   armory: { wax: "#44403c", rim: "#a8a29e", label: "The Armory" },
-  champion: { wax: "#7c2d12", rim: "#fde68a", label: "Your Champion" }
+  champion: { wax: "#7c2d12", rim: "#fde68a", label: "Your Champion" },
+  horror: { wax: "#1e1b4b", rim: "#f43f5e", label: "The Overseers' Wrath" },
+  horror_event: { wax: "#1e1b4b", rim: "#f43f5e", label: "The Overseers' Wrath" }
 };
 
 const sealOf = (kind: string) => NOTICE_SEAL[kind as BroadcastKind] ?? NOTICE_SEAL.announcement;

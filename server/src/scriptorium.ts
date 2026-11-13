@@ -1,4 +1,4 @@
-import { db, exportDevelopers, importDevelopers, type BackupDeveloper } from "./db.js";
+import { db, exportDevelopers, importDevelopers, COMMIT_UNCLAIMED, type BackupDeveloper } from "./db.js";
 import { createBroadcast, recordRealmEvent } from "./broadcasts.js";
 import type { Deed, DeedAllowance, DeedStatus, ScriptoriumClient, ScriptoriumDivision, ScriptoriumProject, ScriptoriumRepo, ScriptoriumTree } from "./types.js";
 
@@ -12,7 +12,7 @@ import type { Deed, DeedAllowance, DeedStatus, ScriptoriumClient, ScriptoriumDiv
  * - A repo sits in at most one project. A developer assigns only their own repos (owned or committed to), only into a
  *   project they created, and can't take a repo out of someone else's project; managers assign any repo anywhere.
  * - Deeds: 5 XP a developer a day (UTC day, the commit quota's day), 0.5 / 1.0 / 1.5 each, for today or yesterday.
- *   The first 3 XP of the day seal at once; a deed that would take sealed + pending past 3 waits for a manager.
+ *   The first 3 XP of the day seal at once; a deed that would take sealed + pending + revoked past 3 waits for a manager.
  *   Pending counts towards the cap, a rejected deed frees its XP. Nobody seals their own deed.
  * Tables live in db.ts (initDB); sealed deed XP is added to buildings by getAllKingdomsFromDB.
  */
@@ -83,8 +83,8 @@ export function ownRepoIds(userId: string): Set<string> {
       UNION
       SELECT DISTINCT c.repo_id FROM commits c JOIN repositories r ON r.id = c.repo_id
       WHERE c.author_login = @id
-         OR c.author_email = (SELECT email FROM users WHERE id = @id)
-         OR c.author_email IN (SELECT email FROM user_emails WHERE user_id = @id)
+         OR ((c.author_email = (SELECT email FROM users WHERE id = @id)
+              OR c.author_email IN (SELECT email FROM user_emails WHERE user_id = @id)) AND ${COMMIT_UNCLAIMED})
     `)
     .all({ id: userId }) as Array<{ id: string }>;
   return new Set(rows.map((r) => r.id));
@@ -495,8 +495,9 @@ export function writeDeed(v: ScriptoriumViewer, body: { repoId?: unknown; day?: 
     if (!fits(used + xp, DEED_RULES.dailyCap)) {
       throw new Error(used >= DEED_RULES.dailyCap ? `That day's deeds are full (${DEED_RULES.dailyCap} / ${DEED_RULES.dailyCap} XP).` : `Only ${DEED_RULES.dailyCap - used} XP of deeds is left that day.`);
     }
-    // The first 3 XP of the day seal at once; a deed that would take sealed + pending past it waits, whole
-    const auto = fits(t.sealed + t.pending + xp, DEED_RULES.autoSeal);
+    // The first 3 XP of the day seal at once; a deed that would take sealed + pending + revoked past it waits, whole
+    // (a revoked deed frees no room, or its replacement would seal with no one seeing it)
+    const auto = fits(t.sealed + t.pending + t.revoked + xp, DEED_RULES.autoSeal);
     const at = new Date(now).toISOString();
     const r = db
       .prepare(`INSERT INTO deeds (user_id, repo_id, day, title, body, xp, status, auto, reviewed_by, reviewed_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)

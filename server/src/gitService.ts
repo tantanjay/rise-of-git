@@ -15,6 +15,8 @@ interface GetAllOptions<T> {
   maxItems?: number;
   /** Stop paging once an item matches (that item and later ones are dropped) */
   stopWhen?: (item: T) => boolean;
+  /** Stop paging after a page this says is the last one needed (the page itself is kept) */
+  stopAfterPage?: (page: T[]) => boolean;
 }
 
 const PAGE_SIZE = 50; // Git's default MAX_RESPONSE_ITEMS
@@ -89,7 +91,7 @@ class GitService {
         out.push(item);
         if (opts.maxItems && out.length >= opts.maxItems) return out;
       }
-      if (batch.length < PAGE_SIZE) break;
+      if (batch.length < PAGE_SIZE || opts.stopAfterPage?.(batch)) break;
     }
     return out;
   }

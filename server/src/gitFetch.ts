@@ -19,6 +19,8 @@ export interface GitAdminEmail {
 }
 
 export interface GitRepo {
+  /** Git's own number for the repo: unlike the name, it stays when the repo is renamed or moves owner */
+  id?: number;
   name: string;
   full_name: string;
   owner: { login: string };
@@ -118,29 +120,50 @@ async function fallbackBranch(repo: GitRepo): Promise<string | null> {
   return branches[0].name;
 }
 
-function getCommits(repo: GitRepo, since: Date, branch?: string, maxItems?: number): Promise<GitCommit[]> {
-  return git.getAll<GitCommit>(
+export interface CommitReadOptions {
+  /** Stop after reading this many commits; 0 reads them all (default `GIT_MAX_COMMITS_PER_REPO`) */
+  maxItems?: number;
+  /**
+   * Commits the realm already holds. With it, an older commit that isn't held yet is kept too (a branch merged
+   * late brings commits written long before), and reading goes on until a whole page is old and already held.
+   */
+  isKnown?: (sha: string) => boolean;
+}
+
+/**
+ * Git lists a branch's commits in history order, not by author date: a branch merged today brings commits written
+ * last week, and a rebased commit keeps its old author date. So one old commit never ends the read; it ends after a
+ * whole page of commits older than `since` (and, with `isKnown`, all already held).
+ */
+async function getCommits(repo: GitRepo, since: Date, branch: string | undefined, opts: CommitReadOptions): Promise<GitCommit[]> {
+  // An unreadable date counts as new, so the commit is kept
+  const isOld = (c: GitCommit) => Date.parse(c.commit?.author?.date ?? "") < since.getTime();
+  const held = (c: GitCommit) => !opts.isKnown || opts.isKnown(c.sha);
+  const commits = await git.getAll<GitCommit>(
     `/repos/${repo.owner.login}/${repo.name}/commits`,
     { stat: "true", verification: "false", files: "false", ...(branch ? { sha: branch } : {}) },
     {
-      maxItems: maxItems ?? config.maxCommitsPerRepo,
-      // Guard in case the server ignores `since`
-      stopWhen: (c) => new Date(c.commit.author.date) < since
+      maxItems: opts.maxItems ?? config.maxCommitsPerRepo,
+      stopAfterPage: (page) => page.every((c) => isOld(c) && held(c))
     }
   );
+  return commits.filter((c) => !isOld(c) || !held(c));
 }
 
-/** Default-branch commits newer than `since`, newest first (falls back to the newest branch if the default is missing). */
-export async function fetchRepoCommits(repo: GitRepo, since: Date, maxItems?: number): Promise<GitCommit[]> {
+/**
+ * Default-branch commits newer than `since`, newest first, plus (with `isKnown`) older ones the realm doesn't hold yet.
+ * Falls back to the newest branch if the default is missing.
+ */
+export async function fetchRepoCommits(repo: GitRepo, since: Date, opts: CommitReadOptions = {}): Promise<GitCommit[]> {
   try {
-    return await getCommits(repo, since, undefined, maxItems);
+    return await getCommits(repo, since, undefined, opts);
   } catch (err) {
     if (err instanceof GitHttpError && (err.status === 409 || err.status === 404)) return []; // empty repo
     if (err instanceof GitHttpError && err.status === 500) {
       const branch = await fallbackBranch(repo).catch(() => null);
       if (branch) {
         console.warn(`ℹ️ ${repo.full_name}: default branch "${repo.default_branch}" doesn't exist — reading commits from "${branch}" instead`);
-        return getCommits(repo, since, branch, maxItems);
+        return getCommits(repo, since, branch, opts);
       }
     }
     throw err;

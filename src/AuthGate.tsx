@@ -2,6 +2,7 @@ import { lazy, Suspense, useEffect, useState } from "react";
 import { API_BASE } from "./config";
 import { App } from "./App";
 import { readGuest, setGuest as storeGuest } from "./utils/guest";
+import { LoadingScreen } from "@/components/ui/LoadingScreen";
 
 // The login screen (its own 3D scene) loads only for signed-out visitors
 const LoginScreen = lazy(() => import("./components/login/LoginScreen").then((m) => ({ default: m.LoginScreen })));
@@ -39,7 +40,8 @@ export function AuthGate() {
       .catch(() => setFailed(true));
   }, []);
 
-  if (!auth && !failed) return <div className="w-screen h-screen bg-black" />;
+  // Checking the session: the loading screen already, so the page goes from the splash straight into it
+  if (!auth && !failed) return <LoadingScreen active view="world_map" />;
   if (auth && (auth.signedIn || (auth.guestBrowsing && guest))) return <App />;
 
   const signIn = () => {

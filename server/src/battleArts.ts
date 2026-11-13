@@ -80,6 +80,8 @@ export const STATUS_MAX_SOURCES = 3;
 export const BLEED_GROWTH = 1;
 /** Paralyze on a boss lands at this share of its strength, and never two rounds in a row */
 export const BOSS_PARALYZE_MULT = 0.5;
+/** Freeze on a boss is only a Chill of this share (−ATK for the Chill's 2 rounds): about one frozen round's worth */
+export const BOSS_FREEZE_CHILL = 0.5;
 
 /** A status on a fighter (stored with it in the battle's JSON) */
 export interface StatusInstance {
@@ -640,6 +642,19 @@ export const FINALES: Record<string, Art> = {
     fx: "dragonfire",
     sound: "dragonfire",
     description: "the peaks breathe fire over every enemy army, leaving them burning"
+  },
+  the_devouring: {
+    id: "the_devouring",
+    name: "The Devouring",
+    emblem: "🌑",
+    castRound: 5,
+    cooldown: 0,
+    once: true,
+    target: "enemies",
+    effect: [{ kind: "strike", power: 1.6 }, { kind: "status", status: "sunder", value: 0.3 }],
+    fx: "the_devouring",
+    sound: "the_devouring",
+    description: "the black core drags every enemy army toward it, tearing the armour from their backs"
   }
 };
 
@@ -652,8 +667,9 @@ export const artById = (id: string): Art | undefined => ARTS[id] ?? FINALES[id];
 
 /** A kit is within its rarity's sizes and names only known Arts / Instincts */
 export function kitProblems(kit: UnitKit): string[] {
-  const size = kit.boss ? BOSS_KIT_SIZE : KIT_SIZES[kit.rarity];
-  const who = kit.boss ? "world boss" : kit.rarity;
+  // The mythic horror fights as a colossus but carries the mythic kit
+  const size = kit.boss && kit.rarity !== "mythic" ? BOSS_KIT_SIZE : KIT_SIZES[kit.rarity];
+  const who = kit.boss && kit.rarity !== "mythic" ? "world boss" : kit.rarity;
   const out: string[] = [];
   if (kit.instincts.length > size.instincts) out.push(`${kit.name}: ${kit.instincts.length} Instincts (a ${who} carries ${size.instincts})`);
   if (kit.arts.length > size.arts) out.push(`${kit.name}: ${kit.arts.length} Arts (a ${who} carries ${size.arts})`);
@@ -783,7 +799,7 @@ export function applyStatus(
   round: number
 ): boolean {
   let s = inst;
-  if (boss && s.kind === "freeze") s = { ...s, kind: "chill", rounds: STATUS_RULES.chill.rounds, value: s.value };
+  if (boss && s.kind === "freeze") s = { ...s, kind: "chill", rounds: STATUS_RULES.chill.rounds, value: BOSS_FREEZE_CHILL * Math.min(1, s.value) };
   if (s.kind === "paralyze") {
     if (boss && target.paralyzedRound !== undefined && target.paralyzedRound >= round - 1) return false;
     if (boss) s = { ...s, value: s.value * BOSS_PARALYZE_MULT };

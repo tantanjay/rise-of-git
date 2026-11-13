@@ -1,6 +1,7 @@
 import { db } from "./db.js";
 import { BattleReport, BossKill, BossNext, BossStatus, CivilizationType, DeveloperKingdom, MapNPC, MarchTargetKind, NodeStatus, NpcKingdomStatus, NPCCategory } from "./types.js";
 import { getOrGenerateFlatWorldMap, getRovingSpawns, WAVE_NODE_PREFIX } from "./worldMapGenerator.js";
+import { footprintOf, roomAt } from "./worldGeometry.js";
 import {
   BOSS_RESPAWN_MS,
   vengefulBossUnit,
@@ -29,6 +30,11 @@ import {
 } from "./warConfig.js";
 import { calculateMaxPopulation, estimateNaturalBirths } from "./demographics.js";
 import { kitLines } from "./battleArts.js";
+import { weekWindow } from "./realmTime.js";
+import { findHorrorNpc, horrorBossState, horrorStats, isHorrorId, markHorrorSlain, setHorrorHp } from "./horror.js";
+import { HORROR_KIT } from "./warConfig.js";
+
+export { weekWindow };
 
 /**
  * Shared world state of map NPCs (GAME_GUIDE §13): a roving mob / bandit pack keeps its losses
@@ -51,6 +57,10 @@ db.exec(`
     life_started INTEGER
   );
 `);
+// The spawn as it stood when a match began there, so it can stay on the map past its window
+if (!(db.prepare(`PRAGMA table_info(world_npc_state)`).all() as Array<{ name: string }>).some((c) => c.name === "spawn_json")) {
+  db.exec(`ALTER TABLE world_npc_state ADD COLUMN spawn_json TEXT`);
+}
 
 /** Bumped whenever a pack loses units or dies, so clients refetch the roving list (GET /status rovingKey) */
 let worldStateVersion = 0;
@@ -75,27 +85,58 @@ export const targetKindOf = (category: NPCCategory | undefined): MarchTargetKind
   }
 };
 
-/** A map NPC by id: persistent buffer NPCs, today's resource nodes, or a roving spawn / wave node of the current window */
+/** A map NPC by id: persistent buffer NPCs, today's resource nodes, a roving spawn / wave node of the current window, or one a match still holds */
 export function findMapNpc(kingdoms: DeveloperKingdom[], npcId: string): MapNPC | null {
+  if (isHorrorId(npcId)) return findHorrorNpc(npcId);
   if (npcId.startsWith("dyn-15m-") || npcId.startsWith(WAVE_NODE_PREFIX)) {
-    return getRovingSpawns(kingdoms).npcs.find((n) => n.id === npcId) ?? null;
+    return getRovingSpawns(kingdoms).npcs.find((n) => n.id === npcId) ?? heldSpawn(npcId);
   }
   const npc = getOrGenerateFlatWorldMap(kingdoms).npcs.find((n) => n.id === npcId) ?? null;
-  return npc ? withActiveBoss(npc) : null;
+  return npc ? withActiveBoss(npc) : heldSpawn(npcId);
 }
+
+/* ------------------------------------------------------------------------- */
+/* Matches hold their spawn past its window                                  */
+/* ------------------------------------------------------------------------- */
+
+/* A fresh spawn whose footprint overlaps a held one waits, hidden, until that match ends: two models never stand in one spot */
+
+/** Spawns with an army/workers marching to it, a live battle, or workers at work on it */
+const HELD_SPAWNS = `
+  SELECT s.npc_id, s.spawn_json FROM world_npc_state s
+  WHERE s.spawn_json IS NOT NULL AND (
+    EXISTS (SELECT 1 FROM battles b WHERE b.target_type = 'npc' AND b.target_id = s.npc_id AND b.status = 'fighting')
+    OR EXISTS (SELECT 1 FROM active_marches m WHERE m.target_type = 'npc' AND m.target_id = s.npc_id AND m.status = 'marching' AND m.phase IN ('outbound', 'acting', 'rallying'))
+    OR EXISTS (SELECT 1 FROM rallies r WHERE r.target_type = 'npc' AND r.target_id = s.npc_id AND r.status = 'open')
+  )
+`;
+
+/** A march sets off or a match begins at this pack, node or chest: remember the spawn, since its window can roll over before the match ends */
+export function pinSpawnForMatch(npc: MapNPC, now = Date.now()) {
+  db.prepare(`
+    INSERT INTO world_npc_state (npc_id, kind, remaining, dead_until, updated_at, spawn_json) VALUES (?, ?, NULL, NULL, ?, ?)
+    ON CONFLICT(npc_id) DO UPDATE SET spawn_json = excluded.spawn_json
+  `).run(npc.id, targetKindOf(npc.category), now, JSON.stringify(npc));
+  worldStateVersion++;
+}
+
+const parseHeldSpawn = (json: string): MapNPC => ({ ...(JSON.parse(json) as MapNPC), heldOver: true });
+
+function heldSpawn(npcId: string): MapNPC | null {
+  const row = db.prepare(`${HELD_SPAWNS} AND s.npc_id = ?`).get(npcId) as { spawn_json: string } | undefined;
+  return row ? parseHeldSpawn(row.spawn_json) : null;
+}
+
+const heldSpawns = () => (db.prepare(HELD_SPAWNS).all() as Array<{ spawn_json: string }>).map((r) => parseHeldSpawn(r.spawn_json));
+
+/** Changes when a match begins or ends, so clients drop a held spawn the moment its match is over */
+export const heldSpawnsKey = () => (db.prepare(HELD_SPAWNS).all() as Array<{ npc_id: string }>).map((r) => r.npc_id).sort().join(",");
 
 /* ------------------------------------------------------------------------- */
 /* Weeks (Sunday 00:00 UTC): boss rotation, Overseer's Resolve, War Frenzy   */
 /* ------------------------------------------------------------------------- */
 
 const WEEK_MS = 7 * 86_400_000;
-
-/** The week running now: Sunday 00:00 UTC → next Sunday 00:00 UTC */
-export function weekWindow(now = Date.now()): { weekKey: string; startsAt: number; resetsAt: number } {
-  const d = new Date(now);
-  const startsAt = Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() - d.getUTCDay(), 0, 0, 0, 0);
-  return { weekKey: new Date(startsAt).toISOString().slice(0, 10), startsAt, resetsAt: startsAt + WEEK_MS };
-}
 
 /* ------------------------------------------------------------------------- */
 /* World bosses                                                              */
@@ -138,6 +179,7 @@ export function bossVengeanceAt(npcId: string, now: number): number {
 
 /** The zone's boss at `now` with its Vengeance applied: stats and stacks */
 export function activeBossUnit(npc: MapNPC, now = Date.now()): BossUnit & { vengeance: number } {
+  if (isHorrorId(npc.id)) return { ...horrorStats(npc.id), kit: HORROR_KIT, vengeance: 0 };
   const vengeance = bossVengeanceAt(npc.id, now);
   return { ...vengefulBossUnit(bossUnitFor(withActiveBoss(npc, now).type), vengeance), vengeance };
 }
@@ -171,6 +213,7 @@ type BossRow = NpcStateRow & { week_key: string | null; life_started: number | n
 
 /** Shared HP of a zone's boss this week: no regeneration; dead until its respawn timer; full again on a new week */
 export function getBossState(npc: MapNPC, now = Date.now()): BossState {
+  if (isHorrorId(npc.id)) return horrorBossState(npc.id);
   const maxHp = activeBossUnit(npc, now).hp;
   const { weekKey } = weekWindow(now);
   const row = db.prepare(`SELECT * FROM world_npc_state WHERE npc_id = ?`).get(npc.id) as BossRow | undefined;
@@ -182,6 +225,11 @@ export function getBossState(npc: MapNPC, now = Date.now()): BossState {
 
 /** Persist the boss's HP after a round (shared by the whole realm) */
 export function setBossHp(npcId: string, hp: number, st: Pick<BossState, "weekKey" | "lifeKey">, now = Date.now()) {
+  if (isHorrorId(npcId)) {
+    setHorrorHp(npcId, hp);
+    worldStateVersion++;
+    return;
+  }
   db.prepare(`
     INSERT INTO world_npc_state (npc_id, kind, remaining, dead_until, updated_at, week_key, life_started) VALUES (?, 'boss', ?, NULL, ?, ?, ?)
     ON CONFLICT(npc_id) DO UPDATE SET remaining = excluded.remaining, dead_until = NULL, updated_at = excluded.updated_at, week_key = excluded.week_key, life_started = excluded.life_started
@@ -191,6 +239,11 @@ export function setBossHp(npcId: string, hp: number, st: Pick<BossState, "weekKe
 
 /** The boss falls: gone until BOSS_RESPAWN_MS later (or the weekly rotation, whichever comes first) */
 export function markBossDead(npcId: string, st: Pick<BossState, "weekKey" | "lifeKey">, now = Date.now()) {
+  if (isHorrorId(npcId)) {
+    markHorrorSlain(npcId, now);
+    worldStateVersion++;
+    return;
+  }
   db.prepare(`
     INSERT INTO world_npc_state (npc_id, kind, remaining, dead_until, updated_at, week_key, life_started) VALUES (?, 'boss', 0, ?, ?, ?, ?)
     ON CONFLICT(npc_id) DO UPDATE SET remaining = 0, dead_until = excluded.dead_until, updated_at = excluded.updated_at, week_key = excluded.week_key, life_started = excluded.life_started
@@ -599,19 +652,32 @@ export function markNpcDead(npc: MapNPC, now = Date.now()) {
   worldStateVersion++;
 }
 
-/** Drop state rows of spawns that expired more than a day ago (a boss keeps its HP all week; old weeks go) */
+/**
+ * Drop state rows of spawns that expired more than a day ago (a boss keeps its HP all week; old weeks go). The bounty's
+ * damage ledger goes with its life, but never while that life can still be fought: a world boss's last-week life stays
+ * while a battle begun before Sunday 00:00 UTC is still on it, and Xal'Vorath's (`horror:<id>`) stays while it is out
+ */
 export function pruneWorldNpcState(now = Date.now()) {
   const { weekKey } = weekWindow(now);
   db.prepare(`DELETE FROM world_npc_state WHERE kind != 'boss' AND updated_at < ? AND (dead_until IS NULL OR dead_until < ?)`).run(now - 86_400_000, now);
   db.prepare(`DELETE FROM world_npc_state WHERE kind = 'boss' AND COALESCE(week_key, '') != ?`).run(weekKey);
-  db.prepare(`DELETE FROM boss_damage WHERE life_key NOT LIKE ?`).run(`${weekKey}:%`);
+  db.prepare(`
+    DELETE FROM boss_damage
+    WHERE life_key NOT LIKE ?
+      AND npc_id NOT IN (SELECT target_id FROM battles WHERE status = 'fighting')
+      AND (life_key NOT LIKE 'horror:%' OR npc_id NOT IN (SELECT 'horror-' || id FROM overseer_horrors WHERE phase IN ('approach', 'siege')))
+  `).run(`${weekKey}:%`);
 }
 
-/** Roving spawns of the current window, dead ones removed, with fogged (or scouted) pack info for the viewer */
+/** Roving spawns of the current window plus those a match still holds, dead ones removed, with fogged (or scouted) pack info for the viewer */
 export function getRovingSpawnsFor(kingdoms: DeveloperKingdom[], scoutedAt: Map<string, { takenAt: number; details: any }>, now = Date.now()) {
   const roving = getRovingSpawns(kingdoms);
+  const current = new Set([...getOrGenerateFlatWorldMap(kingdoms).npcs, ...roving.npcs].map((n) => n.id));
+  const held = heldSpawns().filter((h) => !current.has(h.id));
+  const heldGround = held.map((h) => ({ x: h.x, z: h.z, r: footprintOf(h) }));
+  const fresh = roving.npcs.filter((n) => roomAt(heldGround, n.x, n.z, footprintOf(n)) >= 0);
   const npcs: MapNPC[] = [];
-  for (const n of roving.npcs) {
+  for (const n of [...fresh, ...held]) {
     if (isNpcDead(n, now)) continue;
     const intel = scoutedAt.get(n.id);
     if (n.category === "mob" || n.category === "bandit") {
@@ -624,7 +690,7 @@ export function getRovingSpawnsFor(kingdoms: DeveloperKingdom[], scoutedAt: Map<
           unitName: worldNpcUnitFor(n.type).name,
           band: fogBand(remaining),
           wounded: health < full,
-          health: full > 0 ? Math.round((health / full) * 1000) / 1000 : 1,
+          health: packHealthShown(health, full),
           // Exact numbers only from a scout report (as they were when the scouts saw them)
           exact: intel ? intel.details.packRemaining ?? null : null,
           scoutedAt: intel?.takenAt ?? null
@@ -637,6 +703,17 @@ export function getRovingSpawnsFor(kingdoms: DeveloperKingdom[], scoutedAt: Map<
     }
   }
   return { ...roving, npcs };
+}
+
+/** A pack's HP share shown on the map: whole steps of PACK_HP_STEP, never 0 while it stands nor full once wounded */
+export const PACK_HP_STEP = 0.1;
+export function packHealthShown(health: number, full: number): number {
+  if (full <= 0) return 1;
+  const share = Math.max(0, Math.min(1, health / full));
+  if (share <= 0) return 0;
+  const steps = Math.round(1 / PACK_HP_STEP);
+  const shown = Math.min(share < 1 ? steps - 1 : steps, Math.max(1, Math.round(share * steps)));
+  return shown / steps;
 }
 
 export function treasureChestBand(rarity: string | undefined): "small" | "large" | "hoard" {
@@ -692,6 +769,7 @@ export function claimNode(npc: MapNPC, marchId: string, now = Date.now()) {
     INSERT INTO world_npc_state (npc_id, kind, remaining, dead_until, updated_at, gathered_by, gems_left_json) VALUES (?, ?, ?, NULL, ?, ?, ?)
     ON CONFLICT(npc_id) DO UPDATE SET gathered_by = excluded.gathered_by, remaining = excluded.remaining, gems_left_json = excluded.gems_left_json, updated_at = excluded.updated_at
   `).run(npc.id, targetKindOf(npc.category), st.remaining, now, marchId, JSON.stringify(st.gemsLeft));
+  pinSpawnForMatch(npc, now);
   worldStateVersion++;
 }
 

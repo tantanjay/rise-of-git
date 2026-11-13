@@ -125,6 +125,27 @@
   visibility: hidden;
 }
 
+/* Loading screen: embers rise and a new tip fades in (transform and opacity only, so they keep moving while the
+   page is blocked building the view) */
+@keyframes loadingEmber {
+  from { opacity: 0; transform: translate3d(0, 0, 0); }
+  15% { opacity: 0.9; }
+  to { opacity: 0; transform: translate3d(18px, -60vh, 0); }
+}
+.loading-ember {
+  opacity: 0;
+  animation: loadingEmber 6s linear infinite;
+  box-shadow: 0 0 6px rgba(251, 191, 36, 0.8);
+  will-change: transform, opacity;
+}
+@keyframes loadingTip {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: none; }
+}
+.loading-tip {
+  animation: loadingTip 0.6s ease-out both;
+}
+
 .scrollbar-slim::-webkit-scrollbar {
   width: 6px;
   height: 6px;
@@ -200,6 +221,8 @@
 .wn-enter-shake { animation: wnShake 0.7s ease-out 0.15s forwards, wnShimmer 3s ease-in-out 0.9s infinite; }
 .wn-enter-flash { animation: wnFlash 0.9s linear 0.15s forwards, wnShimmer 3.5s ease-in-out 1s infinite; }
 .wn-enter-rise { animation: wnRiseSun 1.2s cubic-bezier(0.2, 0.8, 0.2, 1) 0.2s forwards, wnShimmer 5s ease-in-out 1.4s infinite; }
+@keyframes wnWelcome { from { opacity: 0; transform: scale(0.9); filter: blur(6px); } to { opacity: 1; transform: none; filter: none; } }
+.wn-enter-welcome { animation: wnWelcome 1s cubic-bezier(0.2, 0.8, 0.2, 1) 0.55s both, wnShimmer 5s ease-in-out 1.6s infinite; }
 .wn-enter-zoom { animation: wnZoom 0.75s cubic-bezier(0.2, 0.9, 0.3, 1.1) 0.1s forwards, wnShimmer 4s ease-in-out 0.9s infinite; }
 
 /* Effects behind the headline */
@@ -228,8 +251,30 @@
 @keyframes wnShockwave { from { opacity: 0.9; transform: scale(0.3); } to { opacity: 0; transform: scale(2.4); } }
 .wn-shockwave { animation: wnShockwave 2.4s ease-out infinite; translate: -50% -50%; }
 
+/* The hearth banner: the gates swing open onto firelight, lanterns sway, motes drift up */
+@keyframes wnGateLeft { from { transform: perspective(600px) rotateY(0deg); } to { transform: perspective(600px) rotateY(80deg); opacity: 0.35; } }
+@keyframes wnGateRight { from { transform: perspective(600px) rotateY(0deg); } to { transform: perspective(600px) rotateY(-80deg); opacity: 0.35; } }
+.wn-gate-left { transform-origin: left center; animation: wnGateLeft 1.3s cubic-bezier(0.5, 0, 0.2, 1) 0.15s both; }
+.wn-gate-right { transform-origin: right center; animation: wnGateRight 1.3s cubic-bezier(0.5, 0, 0.2, 1) 0.15s both; }
+@keyframes wnHearth { 0%, 100% { opacity: 0.75; } 40% { opacity: 1; } 70% { opacity: 0.85; } }
+.wn-hearth { animation: wnHearth 3.2s ease-in-out infinite; }
+@keyframes wnLantern { 0%, 100% { rotate: -5deg; } 50% { rotate: 5deg; } }
+.wn-lantern { transform-origin: 50% 0; translate: -50% 0; animation: wnLantern 3.6s ease-in-out infinite; }
+@keyframes wnLanternGlow { 0%, 100% { opacity: 0.85; } 50% { opacity: 1; } }
+.wn-lantern-glow { animation: wnLanternGlow 1.8s ease-in-out infinite; }
+@keyframes wnMote { from { opacity: 0; transform: translate(0, 0); } 20% { opacity: 0.9; } to { opacity: 0; transform: translate(-10px, -220px); } }
+.wn-mote { opacity: 0; animation: wnMote 5s ease-out infinite; }
+
+/* 🌑 Xal'Vorath's event window */
+@keyframes hvVignette { 0%, 100% { opacity: 0.55; } 50% { opacity: 1; } }
+.hv-vignette { animation: hvVignette 3.2s ease-in-out infinite; }
+@keyframes hvMarker { 0%, 100% { box-shadow: 0 0 8px 1px #fb7185; } 50% { box-shadow: 0 0 22px 7px #f43f5e; } }
+.hv-marker { animation: hvMarker 2s ease-in-out infinite; }
+
 @media (prefers-reduced-motion: reduce) {
+  .hv-vignette, .hv-marker { animation: none; }
   .whatsnew-rise, .whatsnew-title, [class*="wn-enter-"] { animation: none !important; opacity: 1 !important; transform: none !important; }
-  .wn-spin, .wn-twinkle, .wn-ember, .wn-spark, .wn-sheen, .wn-orbit, .wn-shooting, .wn-rain, .wn-lightning, .wn-shockwave { animation: none; }
+  .wn-spin, .wn-twinkle, .wn-ember, .wn-spark, .wn-sheen, .wn-orbit, .wn-shooting, .wn-rain, .wn-lightning, .wn-shockwave, .wn-hearth, .wn-lantern, .wn-lantern-glow, .wn-mote { animation: none; }
+  .wn-gate-left, .wn-gate-right { animation: none; opacity: 0; }
   .wn-twinkle { opacity: 0.6; }
 }

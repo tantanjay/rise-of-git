@@ -184,10 +184,14 @@ export function championHome(userId: string, now = Date.now()): boolean {
   return Boolean(r && championStatus(r, now) === "home");
 }
 
-/** The army a champion led was wiped out: it falls, wounded, and is carried home (it heals by itself) */
-export function woundChampion(userId: string, place: string, now = Date.now()) {
+/**
+ * The army a champion led was wiped out: it falls, wounded, and is carried home (it heals by itself). `marchId` is the
+ * march it fell with (null: the home garrison). A champion out at the head of another march wasn't there and doesn't fall
+ */
+export function woundChampion(userId: string, place: string, marchId: string | null, now = Date.now()) {
   const r = rowOf(userId);
   if (!r || (r.wounded_until && r.wounded_until > now)) return;
+  if (r.march_id && r.march_id !== marchId && marchOut(r.march_id)) return;
   const level = championLevel(r);
   const ms = healMsFor(level);
   db.prepare(`UPDATE kingdom_champions SET march_id = NULL, wounded_until = ? WHERE id = ?`).run(now + ms, r.id);

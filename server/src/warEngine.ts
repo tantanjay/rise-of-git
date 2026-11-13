@@ -40,9 +40,12 @@ import {
   MusterResult
 } from "./types.js";
 import { CIV_DEMOGRAPHICS, convertPopulationOnSwap, calculateMaxPopulation, effectiveUnit } from "./demographics.js";
-import { SCARCE_RESOURCES } from "./db.js";
+import { DROPPED_GEMS } from "./db.js";
+import { horrorAttackBlock, horrorRewards, isHorrorId } from "./horror.js";
+import { HORROR } from "./horrorRules.js";
 import { breakShieldOnAttack } from "./decrees.js";
-import { freeCastlePlots, gateWallPoints, getOrGenerateFlatWorldMap, PROVINCE_CONFIG, rovingWindowMinutes, waveWindowMinutes } from "./worldMapGenerator.js";
+import { VOID_GATE_KEEPOUT, castleKeepout, freeCastlePlots, gateWallPoints, getOrGenerateFlatWorldMap, PROVINCE_CONFIG, registerMapOccupants, rovingWindowMinutes, waveWindowMinutes } from "./worldMapGenerator.js";
+import { FOOTPRINT } from "./worldGeometry.js";
 import { NORMAL_CIVILIZATIONS, hash, loginListed, ARCHON_CASTLE_LEVEL, MAX_BUILDING_LEVEL } from "./kingdomUtils.js";
 import {
   MARCH,
@@ -112,6 +115,7 @@ import { byFront, seededRandom, stepBattleRound, maxRoundsOf, LiveAttackerStack,
 import { artEventLine, kitLines, type UnitRarity } from "./battleArts.js";
 import {
   findMapNpc,
+  pinSpawnForMatch,
   isNpcDead,
   markNpcDead,
   packRemaining,
@@ -222,6 +226,8 @@ export function initWarTables() {
       status TEXT NOT NULL DEFAULT 'fighting'
     );
     CREATE INDEX IF NOT EXISTS idx_battles_target ON battles(target_type, target_id, status);
+    -- The war tick reads the battles still being fought every 2 s; finished ones are kept but never scanned
+    CREATE INDEX IF NOT EXISTS idx_battles_status ON battles(status, next_round_at);
 
     CREATE TABLE IF NOT EXISTS rallies (
       id TEXT PRIMARY KEY,
@@ -289,6 +295,16 @@ initWarTables();
   if (!cols.includes("muster_id")) db.exec(`ALTER TABLE active_marches ADD COLUMN muster_id TEXT`);
   if (!cols.includes("muster_rank")) db.exec(`ALTER TABLE active_marches ADD COLUMN muster_rank INTEGER`);
 }
+
+// Marches that came home: the map shows them for MARCH.SHOWCASE_MS after they end (the index holds the same
+// COALESCE as getActiveMarches, so that read skips older ones).
+// Battle reports: newest first per ruler (the report feed, the last defense) without sorting the whole table.
+db.exec(`
+  CREATE INDEX IF NOT EXISTS idx_marches_shown ON active_marches(status, COALESCE(return_time, arrival_time));
+  CREATE INDEX IF NOT EXISTS idx_reports_time ON battle_reports(timestamp);
+  CREATE INDEX IF NOT EXISTS idx_reports_defender ON battle_reports(defender_id, timestamp);
+  CREATE INDEX IF NOT EXISTS idx_reports_attacker ON battle_reports(attacker_id, timestamp);
+`);
 
 export const isSpecialUser = (k: { id?: string; username?: string }) => {
   const specialSet = new Set(config.specialUsers.map((s) => s.toLowerCase()));
@@ -458,15 +474,26 @@ function openSlotPlots(kingdoms: DeveloperKingdom[], count: number): Array<[numb
   // Same spacing as castles: clear of every Nethergarde castle, the landmarks and (with an Archon) the seat
   const taken = kingdoms.filter((k) => k.civilization === "arcane" && !k.isArchon).map((k) => placements[k.id]).filter(Boolean);
   const archon = kingdoms.some((k) => k.isArchon);
+  // (Resource nodes go round the slots, not the other way: the slots come first on the map's occupancy list)
   const landmarks = [
-    ...map.npcs.filter((n) => !archon || n.id !== "npc-void-monolith").map((n) => ({ x: n.x, z: n.z })),
+    ...map.npcs.filter((n) => n.category !== "resource" && (!archon || n.id !== "npc-void-monolith")).map(castleKeepout),
     // …and off the frontier gates' border walls
-    ...gateWallPoints(map.npcs).map((p) => ({ ...p, gap: 4.5 }))
+    VOID_GATE_KEEPOUT,
+    ...gateWallPoints(map.npcs).map((p) => ({ ...p, gap: FOOTPRINT.voidSlot + FOOTPRINT.wall }))
   ];
   return freeCastlePlots(map.provinces.arcane, taken, count, archon, landmarks);
 }
 
 let lastSpireSignature = "";
+
+// The open Voidrift slots' void kingdoms stand on the map like castles: every spawn keeps clear of them
+registerMapOccupants(true, () => {
+  try {
+    return (db.prepare(`SELECT coord_x AS x, coord_z AS z FROM nethergarde_spires WHERE occupied_by_dev_id IS NULL`).all() as Array<{ x: number; z: number }>).map((s) => ({ x: s.x, z: s.z, r: FOOTPRINT.voidSlot }));
+  } catch {
+    return [];
+  }
+});
 
 export function syncNethergardeSpires(allKingdoms: DeveloperKingdom[], force = false): NethergardeSpire[] {
   const maxSlots = config.nethergardePlayerSlots;
@@ -756,7 +783,13 @@ function planMarch(attacker: DeveloperKingdom, targetType: MarchTargetType, targ
       throw new Error(`${npc.name} has already been wiped out. New encounters appear with the next roving window.`);
     }
     if (targetKind === "boss") {
+      // 🌑 Xal'Vorath: only in its hour at the gates, and only the kingdom it came for and that kingdom's civilization
+      if (isHorrorId(npc.id) && !scouting) {
+        const block = horrorAttackBlock(npc.id, attacker, kingdoms);
+        if (block) throw new Error(block);
+      }
       const st = getBossState(npc);
+      if (st.dead && !scouting && isHorrorId(npc.id)) throw new Error(`${npc.name} is gone.`);
       if (st.dead && !scouting) throw new Error(`${npc.name} has fallen. It returns at full strength ${st.respawnAt ? `in ${Math.ceil((st.respawnAt - Date.now()) / 3_600_000)} h` : "later"} (or with the weekly rotation).`);
     }
     if (targetKind === "npc_kingdom") {
@@ -1087,6 +1120,10 @@ export function startMarch(params: {
       if (kind !== "attack" || civilian) throw new Error("A champion leads attacks and rallies only: never scouts, gatherers or reinforcements.");
       march.champion = takeChampion(attackerKingdom.id, march.id, now);
     }
+    if (targetType === "npc") {
+      const npc = findMapNpc(kingdoms, targetId);
+      if (npc) pinSpawnForMatch(npc, now);
+    }
   })();
   if (attacksRuler(kind, plan.targetKind)) breakShieldOnAttack(attackerKingdom.id, plan.targetName);
   if (callsToArms(kind, plan.targetKind, targetType, targetId)) markCallToArms(attackerKingdom.id);
@@ -1154,6 +1191,10 @@ function startBandMarch(params: { attackerKingdom: DeveloperKingdom; targetType:
       )
     `).run({ ...march, bandId: band.id, bandJson: JSON.stringify(info) });
     if (muster) db.prepare(`UPDATE active_marches SET muster_id = ?, muster_rank = ? WHERE id = ?`).run(muster.id, muster.rank, id);
+    if (targetType === "npc") {
+      const npc = findMapNpc(kingdoms, targetId);
+      if (npc) pinSpawnForMatch(npc, now);
+    }
   })();
   if (attacksRuler(kind, plan.targetKind)) breakShieldOnAttack(attackerKingdom.id, plan.targetName);
   if (callsToArms(kind, plan.targetKind, targetType, targetId)) markCallToArms(attackerKingdom.id);
@@ -1541,6 +1582,9 @@ const getUser = (id: string) =>
     .prepare(`SELECT id, full_name, username, civilization, population, soldiers, city_hall_level, wall_hp, wall_updated_at FROM users WHERE id = ?`)
     .get(id) as UserRow | undefined;
 
+/** A ruler's civilization now (a march row or a battle stack keeps the one it set off with; a band's is its own) */
+const rulerCivOf = (userId: string): CivilizationType | undefined => getUser(userId)?.civilization;
+
 const getUserWallTier = (userId: string): number => {
   const u = getUser(userId);
   if (u && isSpecialUser(u)) return 5;
@@ -1772,6 +1816,7 @@ function creditCarriedLootOnReturn(userId: string, loot: BattleLoot, targetName:
 
 /** Attacker joins Nethergarde: its people (including marching soldiers) convert proportionally to the arcane population scale */
 function ascendAttacker(attackerId: string, fromCiv: CivilizationType, recordVacatedPlace = false) {
+  if (fromCiv === "arcane") return;
   healAllWounded(attackerId, "the Moonwell lets its wounded go as the castle passes into the Voidrift");
   const u = getUser(attackerId);
   if (!u) return;
@@ -1790,9 +1835,33 @@ function ascendAttacker(attackerId: string, fromCiv: CivilizationType, recordVac
   const activeMarches = db
     .prepare(`SELECT id, soldiers_count FROM active_marches WHERE attacker_id = ? AND status = 'marching' AND COALESCE(phase, 'outbound') != 'done' AND band_id IS NULL`)
     .all(attackerId) as Array<{ id: string; soldiers_count: number }>;
+  const scale = (n: number) => (n > 0 ? Math.max(1, Math.round(n * popRatio)) : 0);
   for (const m of activeMarches) {
-    const scaled = Math.max(1, Math.round(m.soldiers_count * popRatio));
-    db.prepare(`UPDATE active_marches SET soldiers_count = ?, attacker_civ = 'arcane' WHERE id = ?`).run(scaled, m.id);
+    db.prepare(`UPDATE active_marches SET soldiers_count = ?, attacker_civ = 'arcane' WHERE id = ?`).run(scale(m.soldiers_count), m.id);
+  }
+  // …and the same soldiers where they stand in live battles (a battle keeps its own counts and writes them back each
+  // round): its stacks, its reinforcements on someone's walls, its home garrison if its own castle is under attack
+  const convert = (g: { count: number; initialCount: number; totalLosses: number; civ: CivilizationType }) => {
+    g.count = scale(g.count);
+    g.initialCount = scale(g.initialCount);
+    g.totalLosses = Math.round(g.totalLosses * popRatio);
+    g.civ = "arcane";
+  };
+  const live = db.prepare(`SELECT id, target_type, target_id, stacks_json, defender_json FROM battles WHERE status = 'fighting'`).all() as Array<{ id: string; target_type: string; target_id: string; stacks_json: string; defender_json: string }>;
+  for (const b of live) {
+    const stacks: LiveAttackerStack[] = JSON.parse(b.stacks_json || "[]");
+    const defender: LiveDefenderState = JSON.parse(b.defender_json);
+    const mine: Array<{ count: number; initialCount: number; totalLosses: number; civ: CivilizationType }> = [
+      ...stacks.filter((s) => s.attackerId === attackerId && !s.band),
+      ...(defender.reinforcements ?? []).filter((g) => g.ownerId === attackerId && !g.band)
+    ];
+    const home = b.target_type === "dev_kingdom" && b.target_id === attackerId;
+    if (home) mine.push(defender);
+    for (const g of mine) convert(g);
+    const changed = mine.length > 0;
+    if (changed) {
+      db.prepare(`UPDATE battles SET stacks_json = ?, defender_json = ?${home ? `, defender_civ = 'arcane'` : ""} WHERE id = ?`).run(JSON.stringify(stacks), JSON.stringify(defender), b.id);
+    }
   }
 
   db.prepare(`UPDATE users SET civilization = 'arcane', population = ?, soldiers = ?, max_population = ?, updated_at = datetime('now') WHERE id = ?`).run(
@@ -1802,7 +1871,7 @@ function ascendAttacker(attackerId: string, fromCiv: CivilizationType, recordVac
     attackerId
   );
 
-  if (recordVacatedPlace && fromCiv !== "arcane") {
+  if (recordVacatedPlace) {
     db.prepare(`INSERT INTO civ_vacated_places (civ, user_id, user_name, vacated_at) VALUES (?, ?, ?, ?)`).run(
       fromCiv,
       attackerId,
@@ -1851,11 +1920,17 @@ function rehomeSwappedMarches(kingdoms: DeveloperKingdom[]) {
 
 function sendMarchReturning(marchId: string, now: number, carry?: BattleLoot | null, report?: BattleReport | null) {
   const m = db
-    .prepare(`SELECT depart_time, arrival_time, soldiers_count, home_x, home_z, start_x, start_z, target_x, target_z, attacker_civ, attacker_id FROM active_marches WHERE id = ?`)
+    .prepare(`SELECT depart_time, arrival_time, soldiers_count, home_x, home_z, start_x, start_z, target_x, target_z, attacker_civ, attacker_id, phase, status FROM active_marches WHERE id = ?`)
     .get(marchId) as
-    | { depart_time: number; arrival_time: number; soldiers_count: number; home_x: number | null; home_z: number | null; start_x: number; start_z: number; target_x: number; target_z: number; attacker_civ: CivilizationType; attacker_id: string }
+    | { depart_time: number; arrival_time: number; soldiers_count: number; home_x: number | null; home_z: number | null; start_x: number; start_z: number; target_x: number; target_z: number; attacker_civ: CivilizationType; attacker_id: string; phase: string | null; status: string }
     | undefined;
   if (!m) return;
+  // Already on its way home (recalled, fallen back) or home: its walk and its haul stay as they are; it only learns
+  // how the battle it left ended
+  if (m.status !== "marching" || m.phase === "returning" || m.phase === "done") {
+    if (report) db.prepare(`UPDATE active_marches SET battle_result_json = COALESCE(battle_result_json, ?) WHERE id = ?`).run(JSON.stringify(report), marchId);
+    return;
+  }
   let travelDur = Math.max(1000, m.arrival_time - m.depart_time);
   // Rally members set out from the leader's castle but walk back to their own
   if (m.home_x !== null && m.home_z !== null && (m.home_x !== m.start_x || m.home_z !== m.start_z)) {
@@ -1925,7 +2000,7 @@ function finishWorldNpcBattle(
   }
 
   markNpcDead({ id: bRow.target_id, category: info?.category, expiresAt: info?.expiresAt ?? undefined } as MapNPC, now);
-  const survivors = stacks.filter((s) => s.count > 0);
+  const survivors = stacks.filter((s) => s.count > 0 && !s.left);
   const totalSurvivors = survivors.reduce((sum, s) => sum + s.count, 0);
   const combined: BattleLoot = {};
   const carries = new Map<string, BattleLoot | null>();
@@ -2168,9 +2243,13 @@ function finishBossBattle(bRow: any, defender: LiveDefenderState, stacks: LiveAt
   markBossDead(bRow.target_id, boss, now);
   log.push(`🏆 ${bRow.target_name} falls!`);
 
+  // 🌑 Xal'Vorath's hoard and bounty are worth more by its Level (shared out as its stats were, if the Wrath was split)
+  const horror = isHorrorId(bRow.target_id) ? horrorRewards(bRow.target_id) : null;
+  const rewardMult = horror?.mult ?? 1;
+
   // The hoard: bulk by load, gems by survivors
-  const pool: Record<string, number> = { ...BOSS_HOARD };
-  const survivors = stacks.filter((s) => s.count > 0);
+  const pool: Record<string, number> = Object.fromEntries(Object.entries(BOSS_HOARD).map(([k, v]) => [k, Math.floor(v * rewardMult)]));
+  const survivors = stacks.filter((s) => s.count > 0 && !s.left);
   const gemKey = BOSS_GEM_KEYS[Math.abs(hash(info.type)) % BOSS_GEM_KEYS.length];
   const gems = splitByWeight(BOSS_HOARD_GEMS, survivors.map((s) => s.count));
   const carries = new Map<string, BattleLoot | null>();
@@ -2204,13 +2283,19 @@ function finishBossBattle(bRow: any, defender: LiveDefenderState, stacks: LiveAt
     const share = totalDamage > 0 ? d.damage / totalDamage : 0;
     const loot: BattleLoot = {};
     for (const k of LOOT_KEYS) {
-      const amt = Math.floor(BOSS_BOUNTY[k] * share);
+      const amt = Math.floor(BOSS_BOUNTY[k] * rewardMult * share);
       if (amt > 0) loot[k] = amt;
     }
     if (Object.keys(loot).length) creditCarriedLootOnReturn(d.userId, loot, bRow.target_name, `Bounty for ${bRow.target_name}: ${Math.round(share * 100)}% of the damage it took this life`, "boss_bounty");
     return { userId: d.userId, name: d.name, damage: d.damage, loot };
   });
   if (dealers.length) log.push(`🎖️ The bounty is shared by ${dealers.length} ${dealers.length === 1 ? "ruler" : "rulers"} who wounded it, by damage dealt.`);
+  // 🌑 One mythical gem, whole however many kingdoms the Wrath was split among, to the ruler who wounded it most
+  if (horror && dealers[0]) {
+    creditCarriedLootOnReturn(dealers[0].userId, { scarce: { [HORROR.GEM]: 1 } }, bRow.target_name, `The Heart of the Void, from ${bRow.target_name}: the most damage dealt`, "boss_bounty");
+    log.push(`🌑 ${dealers[0].name}, who wounded it most, takes the Heart of the Void.`);
+    recordRealmEvent("horror_slain", report.attackerId, horror.targetId, { targetName: horror.targetName, level: horror.level, killerName: report.attackerName, topName: dealers[0].name, dealers: dealers.length }, new Date(now));
+  }
   report.participants = [...new Set([...(report.participants ?? []), ...dealers.map((d) => d.userId)])];
   announceBossSlain({
     bossId: bRow.target_id,
@@ -2263,7 +2348,7 @@ function finishNpcKingdomBattle(
   const combined: BattleLoot = {};
   for (const s of stacks) {
     let carry: BattleLoot | null = null;
-    if (s.count > 0) {
+    if (s.count > 0 && !s.left) {
       let load = Math.floor(s.count * LOAD_PER_SOLDIER * (CIV_LOAD_MULT[s.civ] ?? 1));
       const c: BattleLoot = {};
       for (const key of LOOT_KEYS) {
@@ -2316,15 +2401,15 @@ function payRealmHoard(bRow: any, level: number, stacks: LiveAttackerStack[], re
   const rulers = [...byRuler.entries()].map(([userId, v]) => ({ userId, ...v })).sort((a, b) => b.damage - a.damage);
   const total = rulers.reduce((sum, r) => sum + r.damage, 0);
   let gemsLeft = hoard.gems;
-  report.realmHoard = rulers.map((r, i) => {
+  report.realmHoard = rulers.map((r) => {
     const share = total > 0 ? r.damage / total : 1 / rulers.length;
     const loot: BattleLoot = {};
     for (const key of LOOT_KEYS) {
       const amt = Math.floor(hoard[key] * share);
       if (amt > 0) loot[key] = amt;
     }
-    // Gems by share, rounded down; what rounding leaves goes to the top dealer
-    const gems = i === rulers.length - 1 ? 0 : Math.floor(hoard.gems * share);
+    // Gems by share, rounded down; what rounding leaves goes to the top dealer (below)
+    const gems = Math.floor(hoard.gems * share);
     gemsLeft -= gems;
     if (gems > 0) loot.scarce = { [gemKey]: gems };
     return { userId: r.userId, name: r.name, damage: Math.round(r.damage), loot };
@@ -2409,11 +2494,8 @@ function scoutDetailsFor(march: ActiveMarch, kingdoms: DeveloperKingdom[], now: 
     const wallTier = getUserWallTier(u.id);
     const wall = computeWallState(u.wall_hp, u.wall_updated_at, wallMaxHpFor(level, wallTier), now);
     const res = getKingdomResources(u.id);
-    const away = (
-      db
-        .prepare(`SELECT COALESCE(SUM(soldiers_count), 0) AS total FROM active_marches WHERE attacker_id = ? AND status = 'marching' AND COALESCE(phase, 'outbound') != 'done' AND band_id IS NULL`)
-        .get(u.id) as { total: number }
-    ).total;
+    // Soldiers out on marches (civilians out scouting or gathering are not soldiers)
+    const away = getDeployedSoldiers(u.id);
     const last = db
       .prepare(`SELECT timestamp, attacker_name, attacker_won FROM battle_reports WHERE defender_id = ? ORDER BY timestamp DESC LIMIT 1`)
       .get(u.id) as { timestamp: string; attacker_name: string; attacker_won: number } | undefined;
@@ -2697,7 +2779,7 @@ function treasureContents(npc: Pick<MapNPC, "id" | "rarity">): Record<string, nu
   const out: Record<string, number> = { gold: t.gold, iron: t.iron, stone: t.stone, lumber: t.lumber, food: t.food };
   if (t.gems > 0) {
     const rng = seededRandom(npc.id);
-    const key = SCARCE_RESOURCES[Math.floor(rng() * SCARCE_RESOURCES.length)].key;
+    const key = DROPPED_GEMS[Math.floor(rng() * DROPPED_GEMS.length)].key;
     out[key] = t.gems;
   }
   return out;
@@ -2916,6 +2998,19 @@ function applyGathererLosses(defender: LiveDefenderState, lost: number, targetNa
   });
 }
 
+/** Gatherers whose raid is over (held, or every raider left) go back to work: the pause doesn't count as work time */
+function resumeGatherers(marchId: string, now: number) {
+  const row = db.prepare(`SELECT phase, gather_json FROM active_marches WHERE id = ? AND status = 'marching'`).get(marchId) as { phase: string; gather_json: string | null } | undefined;
+  if (!row?.gather_json || row.phase !== "acting") return;
+  const info = JSON.parse(row.gather_json) as GatherInfo;
+  if (!info.pausedAt) return;
+  const paused = now - info.pausedAt;
+  info.startedAt += paused;
+  info.pausedAt = null;
+  db.prepare(`UPDATE active_marches SET gather_json = ?, act_until = COALESCE(act_until, ?) + ? WHERE id = ?`).run(JSON.stringify(info), now, paused, marchId);
+  touchWorldState();
+}
+
 /**
  * The fight over a node is over. Attackers won: they carry off what the gatherers had gathered so far (by load,
  * earliest army first; a claimed chest goes whole to the first), the node keeps the rest and is free again.
@@ -2944,14 +3039,7 @@ function finishGathererBattle(
   const info = row?.gather_json ? (JSON.parse(row.gather_json) as GatherInfo) : null;
 
   if (!attackerWon || !row || !info) {
-    if (row && info && row.phase === "acting") {
-      // Resume: the pause doesn't count as work time
-      const paused = info.pausedAt ? now - info.pausedAt : 0;
-      info.startedAt += paused;
-      info.pausedAt = null;
-      db.prepare(`UPDATE active_marches SET gather_json = ?, act_until = COALESCE(act_until, ?) + ? WHERE id = ?`).run(JSON.stringify(info), now, paused, g.marchId);
-      touchWorldState();
-    }
+    resumeGatherers(g.marchId, now);
     log.push(`🛡️ ${g.ownerName}'s gatherers hold the node and go back to work.`);
     for (const s of stacks) sendMarchReturning(s.marchId, now, null, report);
     return saveReport(report);
@@ -2967,11 +3055,11 @@ function finishGathererBattle(
   const combined: BattleLoot = {};
   stacks.forEach((s, i) => {
     let carry: BattleLoot | null = null;
-    if (s.count > 0) {
+    if (s.count > 0 && !s.left) {
       carry = {};
       if (info.treasure) {
         // A chest is taken whole by the first surviving army
-        if (i === stacks.findIndex((x) => x.count > 0) && haul) carry = { ...haul };
+        if (i === stacks.findIndex((x) => x.count > 0 && !x.left) && haul) carry = { ...haul };
       } else {
         let load = Math.floor(s.count * loadPerSoldierFor(s.civ));
         for (const k of BULK_RESOURCES) {
@@ -2983,7 +3071,7 @@ function finishGathererBattle(
           }
         }
         // Gems are light: the first surviving army takes them
-        if (haul?.scarce && i === stacks.findIndex((x) => x.count > 0)) carry.scarce = { ...haul.scarce };
+        if (haul?.scarce && i === stacks.findIndex((x) => x.count > 0 && !x.left)) carry.scarce = { ...haul.scarce };
       }
       if (!Object.keys(carry).length) carry = null;
       if (carry) {
@@ -3434,13 +3522,17 @@ function announceGateFallen(gateId: string, gateName: string, stacks: LiveAttack
   const province = PROVINCE_CONFIG[civ]?.name ?? "its province";
   const names = [...new Set(stacks.map((s) => rulerNameOf(s, stacks)))];
   const by = names.length > 1 ? `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}` : names[0] ?? "Raiders";
+  // The burn lasts until the walls climb back to 26%: up to WALL_BURN_REPAIR_MS from 0%, less the higher they stood
+  const endsAt = getNpcKingdom({ id: gateId } as MapNPC, now).burningEndsAt;
+  const hours = endsAt ? (endsAt - now) / 3_600_000 : WALL_BURN_REPAIR_MS / 3_600_000;
+  const burnFor = hours < 1 ? `about ${Math.max(1, Math.round(hours * 60))} minutes` : `about ${Math.round(hours)} hour${Math.round(hours) === 1 ? "" : "s"}`;
   const at = new Date(now);
   const eventId = recordRealmEvent("gate_fallen", stacks[0]?.attackerId ?? null, gateId, { gateName, civ, attackers: names }, at);
   createBroadcast({
     kind: "gate_fallen",
     title: `${gateName} burns`,
     emblem: "🔥",
-    body: `${by} set ${gateName} alight, and its province (${province}) is open: other civilizations can attack its cities until the gate's walls repair above 25% (about ${Math.round(WALL_BURN_REPAIR_MS / 3_600_000)} hours).\n\nWhile it burns the gate takes no reinforcements and scouts pass it freely.`,
+    body: `${by} set ${gateName} alight, and its province (${province}) is open: other civilizations can attack its cities until the gate's walls repair to 26% (${burnFor}).\n\nWhile it burns the gate takes no reinforcements and scouts pass it freely.`,
     audience: "all",
     eventId,
     now: at
@@ -3628,6 +3720,10 @@ export function startRally(params: {
       // 🦸 The leader's champion may lead their army in the rally
       if (army.champion) takeChampion(leader.id, leaderMarchId, now);
     });
+    if (targetType === "npc") {
+      const npc = findMapNpc(kingdoms, targetId);
+      if (npc) pinSpawnForMatch(npc, now);
+    }
   })();
   if (attacksRuler("attack", plan.targetKind)) breakShieldOnAttack(leader.id, plan.targetName);
   if (callsToArms("attack", plan.targetKind, targetType, targetId)) markCallToArms(leader.id);
@@ -3667,7 +3763,8 @@ export function joinRally(params: { rallyId: string; joiner: DeveloperKingdom; s
 
   const id = `march_${now}_${Math.random().toString(36).substring(2, 7)}`;
   db.transaction(() => {
-    const members = (db.prepare(`SELECT attacker_id FROM active_marches WHERE rally_id = ? AND status = 'marching' AND kind = 'rally_join'`).all(rallyId) as Array<{ attacker_id: string }>).map((m) => m.attacker_id);
+    // Joiners on the way to the lobby or in it (one who turned back has left the rally)
+    const members = (db.prepare(`SELECT attacker_id FROM active_marches WHERE rally_id = ? AND status = 'marching' AND kind = 'rally_join' AND COALESCE(phase, 'outbound') IN ('outbound', 'rallying')`).all(rallyId) as Array<{ attacker_id: string }>).map((m) => m.attacker_id);
     if (members.includes(joiner.id)) throw new Error("You've already joined this rally.");
     if (members.length >= r.joiner_cap) throw new Error(`The rally is full (${r.joiner_cap} joiners besides the leader).`);
     const active = countActiveMarchesForUser(joiner.id);
@@ -3730,7 +3827,14 @@ function launchDueRallies(now: number, kingdoms: DeveloperKingdom[]) {
   for (const r of due) {
     db.transaction(() => {
       const members = db.prepare(`SELECT * FROM active_marches WHERE rally_id = ? AND status = 'marching'`).all(r.id) as any[];
-      for (const m of members) if (m.phase === "outbound") turnBackOutbound(m, now);
+      for (const m of members) {
+        if (m.phase !== "outbound") continue;
+        // A joiner who reached the lobby by the launch is in it, even if no war tick has seen them arrive yet
+        if (m.kind === "rally_join" && m.arrival_time <= r.launch_at) {
+          db.prepare(`UPDATE active_marches SET phase = 'rallying', act_until = ? WHERE id = ?`).run(r.launch_at, m.id);
+          m.phase = "rallying";
+        } else turnBackOutbound(m, now);
+      }
       const lobby = members.filter((m) => m.phase === "rallying" && m.soldiers_count > 0);
       const leaderMarch = lobby.find((m) => m.kind === "rally");
       const leader = kingdoms.find((k) => k.id === r.leader_id);
@@ -3763,6 +3867,10 @@ function launchDueRallies(now: number, kingdoms: DeveloperKingdom[]) {
               home_x = COALESCE(home_x, start_x), home_z = COALESCE(home_z, start_z)
           WHERE id = ?
         `).run(plan.startX, plan.startZ, plan.targetX, plan.targetZ, now, now + durationMs, r.target_type, plan.targetKind, r.target_id, `${plan.targetName} (rally)`, bonus, m.id);
+      }
+      if (r.target_type === "npc" && plan) {
+        const npc = findMapNpc(kingdoms, r.target_id);
+        if (npc) pinSpawnForMatch(npc, now);
       }
       db.prepare(`UPDATE rallies SET status = 'launched', launched_at = ? WHERE id = ?`).run(now, r.id);
     })();
@@ -3854,6 +3962,11 @@ function handleArrivedOutboundMarches(now: number, kingdoms: DeveloperKingdom[])
       sendMarchReturning(march.id, now, null, null);
       continue;
     }
+    // A Voidrift slot is for mortals: a ruler who ascended while this march walked (another slot won) turns back
+    if (march.targetType === "spire" && rulerCivOf(march.attackerId) === "arcane") {
+      sendMarchReturning(march.id, now, null, null);
+      continue;
+    }
     // Check if there is already a 'fighting' battle at this target
     const battle = db
       .prepare(`SELECT * FROM battles WHERE target_type = ? AND target_id = ? AND status = 'fighting'`)
@@ -3932,6 +4045,7 @@ function handleArrivedOutboundMarches(now: number, kingdoms: DeveloperKingdom[])
         INSERT INTO battles (id, target_type, target_id, target_name, defender_civ, started_at, round, next_round_at, defender_json, stacks_json, rounds_json, log_json, status)
         VALUES (?, 'npc', ?, ?, 'npc', ?, 0, ?, ?, ?, '[]', ?, 'fighting')
       `).run(battleId, march.targetId, npc.name, now, now, JSON.stringify(defenderState), JSON.stringify(stacks), JSON.stringify(log));
+      pinSpawnForMatch(npc, now);
       db.prepare(`
         UPDATE active_marches
         SET phase = 'acting', battle_id = ?, joined_round = 1, act_until = ?
@@ -4052,6 +4166,8 @@ function handleArrivedOutboundMarches(now: number, kingdoms: DeveloperKingdom[])
         SET phase = 'acting', battle_id = ?, joined_round = 1, act_until = ?
         WHERE id = ?
       `).run(battleId, now + marchMaxRounds(march) * BATTLE_ROUND_MS, march.id);
+      // ⚔️ War Frenzy starts with the siege's first round (GAME_GUIDE §9), not only once the battle is over
+      if (!isSpecialUser(defender)) recordWarFrenzy(march.attackerCiv, defender.civilization, now);
     }
   }
 
@@ -4213,11 +4329,25 @@ function attachRulerBuffs(bRow: { target_type: string; target_id: string; target
     defender.artShare = fit.artShare;
     defender.champion = fit.champion;
     defender.championLed ??= { id: fit.champion.id, userId: homeOwner!, name: fit.champion.name, level: fit.champion.level };
+    defender.championLed.away = false;
+    defender.championLed.roundsLed = (defender.championLed.roundsLed ?? 0) + 1;
   } else if (defender.champion) {
+    // Tell the defender why the walls fight on without it (a fall on these walls has its own line)
+    if (!defender.championLed?.fell) {
+      const r = homeOwner ? ensureChampion(homeOwner) : undefined;
+      const wounded = Boolean(r?.wounded_until && r.wounded_until > Date.now());
+      log.push(
+        wounded
+          ? `🦸 ${defender.champion.name} was carried home wounded from another field and can't take the walls: the garrison fights on without it.`
+          : `🦸 ${defender.champion.name} rides out at the head of a march: the garrison fights on without it (it takes the walls again if it is home before the battle ends).`
+      );
+    }
     defender.kit = undefined;
     defender.artShare = undefined;
     defender.champion = undefined;
   }
+  // A champion that rode out (or fell elsewhere) no longer stands on these walls: it can't fall with this garrison
+  if (!fit && defender.championLed && !defender.championLed.fell) defender.championLed.away = true;
   if (home && defender.roundsFought === 0 && defender.count > 0) {
     const owner = getUser(homeOwner!);
     const name = defender.gather?.ownerName ?? (owner?.full_name || owner?.username || homeOwner!);
@@ -4274,9 +4404,10 @@ function settleChampions(
       led.userId,
       bRow.id,
       {
-        rounds: defender.roundsFought,
-        kills: stacks.reduce((a, s) => a + s.totalLosses, 0),
-        won: !attackerWon && defender.count > 0,
+        // Only the rounds it stood on the walls, and the win only if it was there at the end
+        rounds: led.roundsLed ?? defender.roundsFought,
+        kills: (stacks.reduce((a, s) => a + s.totalLosses, 0) * (led.roundsLed ?? defender.roundsFought)) / Math.max(1, defender.roundsFought),
+        won: !attackerWon && defender.count > 0 && !led.away,
         finaleKills: breaks.reduce((a, e) => a + (e.broke?.length ?? 0), 0)
       },
       `the walls of ${bRow.target_name}`,
@@ -4295,8 +4426,11 @@ function tickActiveBattles(now: number): BattleReport[] {
   const battles = db.prepare(`SELECT * FROM battles WHERE status = 'fighting' AND next_round_at <= ? ORDER BY started_at ASC`).all(now) as any[];
   const reports: BattleReport[] = [];
 
-  for (const bRow of battles) {
+  for (const listed of battles) {
     const report = db.transaction((): BattleReport | null => {
+      // Read the battle afresh: an earlier battle this tick may have changed it (a ruler ascending rescales their stacks)
+      const bRow = db.prepare(`SELECT * FROM battles WHERE id = ? AND status = 'fighting'`).get(listed.id) as any;
+      if (!bRow) return null;
       const stacks: LiveAttackerStack[] = JSON.parse(bRow.stacks_json || "[]");
       const defender: LiveDefenderState = JSON.parse(bRow.defender_json);
       const rounds = JSON.parse(bRow.rounds_json || "[]");
@@ -4309,10 +4443,14 @@ function tickActiveBattles(now: number): BattleReport[] {
         )
       );
       const presentStacks = stacks.filter((s) => actingMarchIds.has(s.marchId) && s.count > 0);
+      // A march that left (recalled, fell back, wiped out) is out for good: no plunder, hoard carry or gems at the end
+      for (const s of stacks) if (!presentStacks.includes(s)) s.left = true;
 
       if (presentStacks.length === 0) {
-        db.prepare(`UPDATE battles SET status = 'done' WHERE id = ?`).run(bRow.id);
+        // Every attacker left: the battle closes, and gatherers it paused go back to work as after a raid they held
+        db.prepare(`UPDATE battles SET status = 'done', stacks_json = ? WHERE id = ?`).run(JSON.stringify(stacks), bRow.id);
         bandsLeaveTheWalls(bRow.id);
+        if (defender.gather) resumeGatherers(defender.gather.marchId, now);
         return null;
       }
 
@@ -4364,7 +4502,7 @@ function tickActiveBattles(now: number): BattleReport[] {
           // 🦸 The army a champion led is wiped out: it falls, wounded, and is carried home
           if (s.champion && s.count <= 0 && !s.championFell) {
             s.championFell = true;
-            woundChampion(s.attackerId, bRow.target_name, now);
+            woundChampion(s.attackerId, bRow.target_name, s.marchId, now);
             log.push(`🦸 ${s.champion.name} falls with the last of ${s.attackerName}'s army and is carried from the field, wounded.`);
           }
           // 🪙 A band loses strength, not citizens: at 0% it is dead
@@ -4405,11 +4543,6 @@ function tickActiveBattles(now: number): BattleReport[] {
               db.prepare(`UPDATE users SET population = MAX(0, COALESCE(population, 0) - ?) WHERE id = ?`).run(lost, s.attackerId);
             }
             const u = getUser(s.attackerId);
-            const dep = (
-              db
-                .prepare(`SELECT COALESCE(SUM(soldiers_count), 0) AS total FROM active_marches WHERE attacker_id = ? AND status = 'marching' AND COALESCE(phase, 'outbound') != 'done' AND band_id IS NULL`)
-                .get(s.attackerId) as { total: number }
-            ).total;
             recordPopulationLedger({
               userId: s.attackerId,
               type: "battle",
@@ -4417,16 +4550,16 @@ function tickActiveBattles(now: number): BattleReport[] {
               soldiersDelta: -lost,
               populationDelta: -lost,
               populationBalance: u?.population ?? 0,
-              soldiersBalance: (u?.soldiers ?? 0) + dep + getWoundedSoldiers(s.attackerId),
+              soldiersBalance: (u?.soldiers ?? 0) + soldiersAwayOf(s.attackerId),
               reason: `Round ${nextRound} at ${bRow.target_name}: ${lost} soldiers fell`
             });
           }
         }
 
         // 🦸 The home garrison a champion led is wiped out: it falls too
-        if (defender.championLed && !defender.championLed.fell && defender.count <= 0 && bRow.target_type === "dev_kingdom") {
+        if (defender.championLed && !defender.championLed.fell && !defender.championLed.away && defender.count <= 0 && bRow.target_type === "dev_kingdom") {
           defender.championLed.fell = true;
-          woundChampion(defender.championLed.userId, bRow.target_name, now);
+          woundChampion(defender.championLed.userId, bRow.target_name, null, now);
           log.push(`🦸 ${defender.championLed.name} falls on the walls with the last of the garrison and is carried inside, wounded.`);
         }
 
@@ -4679,8 +4812,13 @@ function tickActiveBattles(now: number): BattleReport[] {
         const npc = spire ? voidNpcFor(spire.slot_index) : null;
         if (npc) finalReport.defenderMaxGarrison = spire.max_garrison ?? npc.maxGarrison;
 
-        if (attackerWon && spire && npc) {
-          const winner = presentStacks.find((s) => s.count > 0) ?? leadStack;
+        // Only a mortal ruler claims a slot (one who ascended mid-battle by another slot already holds one)
+        const winner = attackerWon && spire && npc ? presentStacks.find((s) => s.count > 0 && rulerCivOf(s.attackerId) !== "arcane") : undefined;
+        if (attackerWon && spire && npc && !winner) {
+          log.push(`🌀 The garrison of ${finalReport.defenderName} is broken, but no mortal ruler is left to claim the slot. The armies fall back.`);
+          for (const s of stacks) sendMarchReturning(s.marchId, now, null, finalReport);
+        } else if (attackerWon && spire && npc && winner) {
+          const winnerCiv = rulerCivOf(winner.attackerId) ?? winner.civ;
           finalReport.usurpedSlot = true;
           finalReport.civilizationSwapped = true;
           finalReport.newAttackerCiv = "arcane";
@@ -4690,7 +4828,7 @@ function tickActiveBattles(now: number): BattleReport[] {
             winner.attackerId,
             spire.id
           );
-          ascendAttacker(winner.attackerId, winner.civ, true);
+          ascendAttacker(winner.attackerId, winnerCiv, true);
           pendingRehomes.add(winner.attackerId);
           log.push(`🏆 The garrison of ${finalReport.defenderName} is broken! ${winner.attackerName} claims Voidrift slot ${spire.slot_index} and ascends to Nethergarde.`);
           log.push(`🌀 ${winner.attackerName}'s castle and victorious army are pulled through the rift into the Voidrift.`);
@@ -4716,7 +4854,9 @@ function tickActiveBattles(now: number): BattleReport[] {
       // Target is a developer kingdom
       const defUser = getUser(bRow.target_id);
       if (attackerWon && defUser) {
-        const winner = presentStacks.find((s) => s.count > 0) ?? leadStack;
+        // The usurper: the first surviving army of a mortal ruler (a ruler is judged by their civilization now, not the one their army set off with)
+        const winner = presentStacks.find((s) => s.count > 0 && rulerCivOf(s.attackerId) !== "arcane");
+        const winnerCiv = winner ? (rulerCivOf(winner.attackerId) ?? winner.civ) : null;
 
         // Special Overseers hold no Voidrift slot: a defeat only strengthens their Resolve
         if (overseer) {
@@ -4726,11 +4866,11 @@ function tickActiveBattles(now: number): BattleReport[] {
         }
 
         // If a mortal ruler defeats a Nethergarde developer kingdom, usurp their Voidrift slot!
-        if (defender.civ === "arcane" && winner.civ !== "arcane" && !overseer) {
+        if (defender.civ === "arcane" && winner && winnerCiv && !overseer) {
           finalReport.usurpedSlot = true;
           finalReport.civilizationSwapped = true;
           finalReport.newAttackerCiv = "arcane";
-          finalReport.newDefenderCiv = winner.civ;
+          finalReport.newDefenderCiv = winnerCiv;
 
           const level = defUser.city_hall_level ?? 1;
           const converted = convertPopulationOnSwap({
@@ -4738,15 +4878,15 @@ function tickActiveBattles(now: number): BattleReport[] {
             currentSoldiers: defUser.soldiers ?? 0,
             oldCiv: "arcane",
             oldLevel: level,
-            newCiv: winner.civ,
+            newCiv: winnerCiv,
             newLevel: level,
             isCombatDefeat: true
           });
           db.prepare(`UPDATE users SET civilization = ?, population = ?, soldiers = ?, max_population = ?, void_well = 0, updated_at = datetime('now') WHERE id = ?`).run(
-            winner.civ,
+            winnerCiv,
             converted.newPopulation,
             converted.newSoldiers,
-            calculateMaxPopulation(level, winner.civ),
+            calculateMaxPopulation(level, winnerCiv),
             defUser.id
           );
           recordPopulationLedger({
@@ -4755,23 +4895,23 @@ function tickActiveBattles(now: number): BattleReport[] {
             deaths: defender.totalLosses,
             populationBalance: converted.newPopulation,
             soldiersBalance: converted.newSoldiers,
-            reason: `Cast out of Nethergarde by ${winner.attackerName} (arcane → ${winner.civ})`
+            reason: `Cast out of Nethergarde by ${winner.attackerName} (arcane → ${winnerCiv})`
           });
 
           db.prepare(`UPDATE nethergarde_spires SET occupied_by_dev_id = ? WHERE occupied_by_dev_id = ?`).run(winner.attackerId, defUser.id);
-          ascendAttacker(winner.attackerId, winner.civ, false);
+          ascendAttacker(winner.attackerId, winnerCiv, false);
           pendingRehomes.add(winner.attackerId);
           pendingRehomes.add(defUser.id);
-          log.push(`🔄 ${winner.attackerName} takes the Void throne; ${finalReport.defenderName} is cast down to become ${winner.civ}.`);
+          log.push(`🔄 ${winner.attackerName} takes the Void throne; ${finalReport.defenderName} is cast down to become ${winnerCiv}.`);
           log.push(`🌀 Both castles teleport: ${winner.attackerName}'s victorious army goes with theirs into the Voidrift.`);
         }
-        const teleported = finalReport.civilizationSwapped ? winner.attackerId : null;
+        const teleported = finalReport.civilizationSwapped && winner ? winner.attackerId : null;
 
         // Plunder by surviving troop load for each surviving attacking stack
         const combinedLoot: BattleLoot = {};
         for (const s of stacks) {
           let carry: BattleLoot | null = null;
-          if (s.count > 0) {
+          if (s.count > 0 && !s.left) {
             carry = plunderDefenderTreasury(defUser.id, defUser.city_hall_level ?? 1, s.attackerName, s.count, s.civ);
             if (carry) {
               for (const k of ["gold", "iron", "stone", "lumber", "food"] as const) {

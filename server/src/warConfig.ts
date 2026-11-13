@@ -1,19 +1,23 @@
 import { CivilizationType } from "./types.js";
 import { ARTS, INSTINCTS, KIT_SIZES, instinctStats, type UnitKit } from "./battleArts.js";
+import { WORLD_SCALE } from "./worldGeometry.js";
 
 /**
  * Every tunable number of the war game in one place: marching, rations, combat, civ traits and
  * the Nethergarde NPC kingdoms that guard open Voidrift slots. GAME_GUIDE §10 documents them.
  */
 
-/** Marching: travel time and food rations scale with the distance on the world map */
+/**
+ * Marching: travel time and food rations scale with the distance on the world map. Both follow the world scale, so a
+ * march between the same two places takes as long and eats as much as before the realm grew.
+ */
 export const MARCH = {
-  /** Map units covered per "supply tick" when rations are costed */
-  UNITS_PER_RATION_TICK: 20,
+  /** Map units covered per "supply tick" when rations are costed (20 before the realm grew) */
+  UNITS_PER_RATION_TICK: 20 * WORLD_SCALE,
   /** Food each soldier eats per supply tick on the road */
   FOOD_PER_SOLDIER_PER_TICK: 2,
-  /** Travel time per map unit at 1.0x march speed */
-  MS_PER_MAP_UNIT: 2000,
+  /** Travel time per map unit at 1.0x march speed (2,000 ms before the realm grew: armies move faster by the world scale) */
+  MS_PER_MAP_UNIT: 2000 / WORLD_SCALE,
   /** Every march takes between these, whatever the civ's speed (under 5 minutes) */
   MIN_DURATION_MS: 30_000,
   MAX_DURATION_MS: 299_000,
@@ -752,13 +756,36 @@ export const BOSS_UNITS: Record<string, BossUnit> = {
   "boss-gorgon": { ...BOSS_BASE, kit: kit(["cleave", "stoneskin", "bloodlust"], ["ward", "glacial_prison"], "petrifying_gaze") }
 };
 
+export interface HorrorStats {
+  hp: number;
+  atk: number;
+  def: number;
+}
+
+/** 🌑 Xal'Vorath's base stats by Level, 1–5 (horrorRules.ts; tuned with `npm run sim:balance`) */
+export const HORROR_LEVELS: Record<number, HorrorStats> = {
+  1: { hp: 120_000, atk: 1_000, def: 10 },
+  2: { hp: 180_000, atk: 1_100, def: 11 },
+  3: { hp: 260_000, atk: 1_250, def: 12 },
+  4: { hp: 380_000, atk: 1_400, def: 13 },
+  5: { hp: 560_000, atk: 1_600, def: 14 }
+};
+
+/** Its map model and NPC type */
+export const HORROR_NPC_TYPE = "mythic-singularity";
+
+/** The mythic kit, the one unit that carries it in the realm: 3 Instincts, 3 Arts and its own Finale */
+export const HORROR_KIT: BossUnit["kit"] = { instincts: ["cleave", "thick_hide", "enrage"], arts: ["thunderclap", "armor_break", "rending_blow"], finale: "the_devouring" };
+
 export function bossUnitFor(type: string): BossUnit {
+  // Its stats are each horror's own (horror.ts); this Level 3 is what the Sparring Grounds pits it at
+  if (type === HORROR_NPC_TYPE) return { ...HORROR_LEVELS[3], kit: HORROR_KIT };
   return BOSS_UNITS[type] ?? BOSS_UNITS["boss-kraken"];
 }
 
 /** A boss's kit as it fights (legendary, one colossal unit), named for the reports */
 export function bossKitFor(type: string, name: string): UnitKit {
-  return { name, rarity: "legendary", boss: true, ...bossUnitFor(type).kit };
+  return { name, rarity: type === HORROR_NPC_TYPE ? "mythic" : "legendary", boss: true, ...bossUnitFor(type).kit };
 }
 
 /**

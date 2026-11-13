@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { setLoadStage } from "@/utils/loadingScreen";
 import { Html } from "@react-three/drei";
 import { useFrame, useThree } from "@react-three/fiber";
 import { CompileGate } from "./CompileGate";
@@ -106,15 +107,17 @@ function PlotHighlight({ plot }: { plot: PlotPlacement }) {
 }
 
 /**
- * Mounts the city behind a loader: creating its meshes, merging the town hall and compiling shaders
- * blocks the page for a moment (longer on slow machines), so the loader is painted first.
+ * Mounts the city behind the loading screen: creating its meshes, merging the town hall and compiling shaders
+ * takes a moment (longer on slow machines), so the screen is painted first and the city mounts right after.
  * Keyed by kingdom id in Scene3D, so each kingdom switch goes through this once.
  */
 export function CityView3D(props: CityView3DProps) {
   const [ready, setReady] = useState(false);
   useEffect(() => {
-    // Give the browser a moment to paint the loader before the blocking build
-    const t = setTimeout(() => setReady(true), 60);
+    // The loading screen has painted (the app waits a paint before switching views); the city then mounts in one go: it
+    // is small, and slicing it in a transition only made the trip slower
+    setLoadStage("castles");
+    const t = setTimeout(() => setReady(true), 0);
     return () => clearTimeout(t);
   }, []);
   return ready ? <CityContent {...props} /> : null;

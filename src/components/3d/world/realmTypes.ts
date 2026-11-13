@@ -2,6 +2,20 @@
  * The buffer realms' model types (mirrors the server's BUFFER_POOLS kingdoms: 3 per buffer zone). Their staged models
  * are in realms.ts; kept apart so landmarks.ts can list them without importing the models.
  */
+/** Xal'Vorath on the HD map: where it stands and what it is doing */
+export interface HorrorPlacement {
+  id: string;
+  x: number;
+  y: number;
+  z: number;
+  action: "walking" | "idle" | "attacking";
+  /** Which way it faces */
+  yaw: number;
+  /** Seconds into its animation it starts at, and how fast it plays it: no two move in step */
+  offset: number;
+  pace: number;
+}
+
 export const REALM_MODEL_TYPES = new Set<string>([
   "bk-corsair-citadel",
   "bk-port-royale",

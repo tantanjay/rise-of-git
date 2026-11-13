@@ -27,7 +27,7 @@ import {
 import crypto from "crypto";
 import { config } from "./env.js";
 import { DAY_PART_EFFECTS, dayPartOfWindow, seasonEffects, GEM_TILT } from "./realmTime.js";
-import { DISASTERS, barrenBirthMult, barrenVoidWellMult, blightBuildingMult, blightPoolMult, disasterAt, plagueRate, tallyDisaster } from "./disasterRules.js";
+import { DISASTERS, dateKeyIn, barrenBirthMult, barrenVoidWellMult, blightBuildingMult, blightPoolMult, disasterAt, plagueRate, tallyDisaster } from "./disasterRules.js";
 import type {
   CivilizationType,
   BuildingType,
@@ -76,6 +76,13 @@ export const db = new Database(DB_PATH);
 // High-performance WAL mode
 db.pragma("journal_mode = WAL");
 db.pragma("synchronous = NORMAL");
+// A bigger page cache (64 MB) and in-memory temp sorts keep the long-lived ledgers quick as they grow
+db.pragma("cache_size = -64000");
+db.pragma("temp_store = MEMORY");
+// Keep the query planner's table statistics fresh as tables grow (cheap: SQLite only re-analyses what changed)
+db.pragma("analysis_limit = 400");
+setTimeout(() => db.pragma("optimize"), 60_000).unref();
+setInterval(() => db.pragma("optimize"), 6 * 60 * 60 * 1000).unref();
 
 export const SCARCE_RESOURCES: ScarceResourceDef[] = [
   {
@@ -173,8 +180,20 @@ export const SCARCE_RESOURCES: ScarceResourceDef[] = [
     pool: 50,
     description: "Ever-burning celestial plumage radiating the immortal heat of primordial rebirth.",
     rarity: "legendary"
+  },
+  {
+    key: "void_heart",
+    name: "Heart of the Void",
+    emblem: "🌑",
+    // Never in a harvest or a chest: one drops from each Xal'Vorath slain
+    pool: 0,
+    description: "The black core of a slain Xal'Vorath, still pulling faintly at everything near it. The rarest trophy in the realm.",
+    rarity: "mythical"
   }
 ];
+
+/** The gems harvests and chests can pay (a gem with no pool is won another way) */
+export const DROPPED_GEMS = SCARCE_RESOURCES.filter((g) => g.pool > 0);
 
 export function initDB() {
   db.exec(`
@@ -217,7 +236,12 @@ export function initDB() {
       files_count INTEGER DEFAULT 0,
       commits_count INTEGER DEFAULT 0,
       updated_at TEXT,
-      backfilled_at TEXT
+      backfilled_at TEXT,
+      -- Git's own number for the repo: it stays when the repo is renamed or moves owner, so the building follows it
+      git_id INTEGER,
+      -- Git's updated_at for the repo when a live sync last read it: a repo whose updated_at has moved on since is
+      -- read again however long ago it changed (the server may have been down past the sync's lookback window)
+      synced_updated_at TEXT
     );
 
     CREATE TABLE IF NOT EXISTS commits (
@@ -307,6 +331,9 @@ export function initDB() {
 
     CREATE INDEX IF NOT EXISTS idx_ledger_user ON resource_ledger(user_id);
     CREATE INDEX IF NOT EXISTS idx_ledger_time ON resource_ledger(timestamp);
+    -- Per-ruler totals of one kind of entry (the Gatherer title sums every gathering haul) read only that kind's rows;
+    -- the deltas ride in the index so the sum never visits the table (its rows are scattered across years of history)
+    CREATE INDEX IF NOT EXISTS idx_ledger_user_type ON resource_ledger(user_id, type, gold_delta, iron_delta, stone_delta, lumber_delta, food_delta);
 
     -- Maps all alternate and discovered Git commit emails to their corresponding developer account
     CREATE TABLE IF NOT EXISTS user_emails (
@@ -337,6 +364,9 @@ export function initDB() {
       scarce_key TEXT,
       scarce_pool INTEGER DEFAULT 0
     );
+    -- Harvest counts (day / night parity on every status poll), harvests in a window and the first harvest read this
+    -- small index instead of every row's details JSON
+    CREATE INDEX IF NOT EXISTS idx_alloc_time ON allocation_logs(cycle_timestamp);
 
     CREATE TABLE IF NOT EXISTS kingdom_scarce_resources (
       user_id TEXT NOT NULL,
@@ -438,6 +468,14 @@ export function initDB() {
       user_id TEXT NOT NULL,
       day TEXT NOT NULL,
       actions INTEGER NOT NULL DEFAULT 0,
+      PRIMARY KEY (user_id, day)
+    );
+
+    -- Minutes with the realm open per ruler per UTC day (one per minute the signed-in client polls): the Watchtower's Game activity
+    CREATE TABLE IF NOT EXISTS player_presence (
+      user_id TEXT NOT NULL,
+      day TEXT NOT NULL,
+      minutes INTEGER NOT NULL DEFAULT 0,
       PRIMARY KEY (user_id, day)
     );
 
@@ -543,6 +581,15 @@ export function initDB() {
 
 initDB();
 
+// Columns added after the table first shipped (before the statements below are prepared)
+{
+  const cols = (db.prepare("PRAGMA table_info(repositories)").all() as Array<{ name: string }>).map((c) => c.name);
+  if (!cols.includes("git_id")) db.exec("ALTER TABLE repositories ADD COLUMN git_id INTEGER");
+  // A database from before: its repos count as read as they stand (Reset Historical Backfill recovers older gaps)
+  if (!cols.includes("synced_updated_at")) db.exec("ALTER TABLE repositories ADD COLUMN synced_updated_at TEXT; UPDATE repositories SET synced_updated_at = updated_at");
+  db.exec("CREATE INDEX IF NOT EXISTS idx_repos_git_id ON repositories(git_id)");
+}
+
 // Statements
 const stmtUpsertUser = db.prepare(`
   INSERT INTO users (id, username, full_name, email, civilization, kingdom_title, city_hall_level, streak_days, updated_at)
@@ -558,9 +605,10 @@ const stmtUpsertUser = db.prepare(`
 `);
 
 const stmtUpsertRepo = db.prepare(`
-  INSERT INTO repositories (id, name, full_name, owner_login, default_branch, lines_count, files_count, commits_count, updated_at)
-  VALUES (@id, @name, @fullName, @ownerLogin, @defaultBranch, @linesCount, @filesCount, @commitsCount, @updatedAt)
+  INSERT INTO repositories (id, name, full_name, owner_login, default_branch, lines_count, files_count, commits_count, updated_at, git_id)
+  VALUES (@id, @name, @fullName, @ownerLogin, @defaultBranch, @linesCount, @filesCount, @commitsCount, @updatedAt, @gitId)
   ON CONFLICT(id) DO UPDATE SET
+    git_id = coalesce(excluded.git_id, repositories.git_id),
     name = excluded.name,
     full_name = excluded.full_name,
     owner_login = excluded.owner_login,
@@ -829,6 +877,12 @@ export const stmtGetAllUserEmails = db.prepare(`
 `);
 
 /** Commits whose (email, repo) has an admin per-repo match: the plain email rule leaves them alone */
+/**
+ * A commit (`c`) no developer holds by login. Only such a commit is credited by its email: once an email passes to
+ * another developer, the commits the first one holds stay theirs instead of counting for both.
+ */
+export const COMMIT_UNCLAIMED = `(c.author_login IS NULL OR c.author_login NOT IN (SELECT id FROM users))`;
+
 const NOT_REPO_MATCHED = `NOT EXISTS (SELECT 1 FROM repo_emails re WHERE re.email = lower(commits.author_email) AND re.repo_id = commits.repo_id)`;
 
 const stmtEmailHasRepoRule = db.prepare(`SELECT 1 FROM repo_emails WHERE email = ? LIMIT 1`);
@@ -1778,7 +1832,7 @@ export const transferKingdomResources = db.transaction((
 export const saveGitSnapshot = db.transaction((
   users: Array<{ id: string; username: string; fullName: string; email: string; civilization: string; kingdomTitle: string; cityHallLevel: number; streakDays: number }>,
   userEmails: Array<{ email: string; userId: string }>,
-  repos: Array<{ id: string; name: string; fullName: string; ownerLogin: string; defaultBranch: string; linesCount: number; filesCount: number; commitsCount: number; updatedAt: string }>,
+  repos: Array<{ id: string; name: string; fullName: string; ownerLogin: string; defaultBranch: string; linesCount: number; filesCount: number; commitsCount: number; updatedAt: string; gitId?: number | null }>,
   commits: Array<{ hash: string; repoId: string; authorLogin: string | null; authorName: string; authorEmail: string; message: string; linesAdded: number; linesDeleted: number; committedAt: string }>,
   pulls: Array<{ id: number; repoId: string; authorLogin: string | null; title: string; state: string; mergedAt: string | null; createdAt: string }>,
   userSubscriptions: Array<{ userId: string; repoId: string }> = [],
@@ -1798,7 +1852,7 @@ export const saveGitSnapshot = db.transaction((
     }
   }
   for (const r of repos) {
-    stmtUpsertRepo.run(r);
+    stmtUpsertRepo.run({ gitId: null, ...r });
   }
   for (const c of commits) {
     stmtUpsertCommit.run(c);
@@ -1821,6 +1875,53 @@ const stmtCheckUserExists = db.prepare(`SELECT 1 FROM users WHERE id = ?`);
 const stmtCheckRepoExists = db.prepare(`SELECT 1 FROM repositories WHERE id = ?`);
 const stmtCheckCommitExists = db.prepare(`SELECT 1 FROM commits WHERE hash = ?`);
 const stmtCheckPRExists = db.prepare(`SELECT 1 FROM pull_requests WHERE id = ?`);
+const stmtRepoBackfilled = db.prepare(`SELECT 1 FROM repositories WHERE id = ? AND backfilled_at IS NOT NULL`);
+
+/** The realm holds this commit already */
+export function isCommitStored(hash: string): boolean {
+  return !!stmtCheckCommitExists.get(hash);
+}
+
+/** Git's `updated_at` for each repo when a live sync last read it */
+export function getSyncedRepoVersions(): Map<string, string | null> {
+  return new Map((db.prepare(`SELECT id, synced_updated_at FROM repositories`).all() as Array<{ id: string; synced_updated_at: string | null }>).map((r) => [r.id, r.synced_updated_at]));
+}
+
+/** The backfill has read this repo's history */
+export function isRepoBackfilled(repoId: string): boolean {
+  return !!stmtRepoBackfilled.get(repoId);
+}
+
+const stmtRepoByGitId = db.prepare(`SELECT id FROM repositories WHERE git_id = ? AND id != ? LIMIT 1`);
+
+/**
+ * A repo renamed (or moved to another owner) in Git: moves everything held under its old id to the new one, inside
+ * the caller's transaction. When a row under the new name exists already (the sync saw the new name before it knew
+ * the repo's Git number), the two are merged: the old row's plot, project and checkpoint win, as the older building.
+ */
+function renameRepository(oldId: string, newId: string) {
+  const fresh = stmtCheckRepoExists.get(newId);
+  if (fresh) {
+    db.prepare(`DELETE FROM kingdom_layout WHERE repo_id = ? AND user_id IN (SELECT user_id FROM kingdom_layout WHERE repo_id = ?)`).run(newId, oldId);
+    db.prepare(`DELETE FROM project_repos WHERE repo_id = ? AND EXISTS (SELECT 1 FROM project_repos WHERE repo_id = ?)`).run(newId, oldId);
+    const old = db.prepare(`SELECT lines_count, files_count, commits_count, backfilled_at FROM repositories WHERE id = ?`).get(oldId) as any;
+    db.prepare(`UPDATE repositories SET lines_count = max(lines_count, ?), files_count = max(files_count, ?), commits_count = max(commits_count, ?),
+      backfilled_at = coalesce(?, backfilled_at) WHERE id = ?`).run(old.lines_count, old.files_count, old.commits_count, old.backfilled_at, newId);
+    db.prepare(`DELETE FROM repositories WHERE id = ?`).run(oldId);
+  } else {
+    db.prepare(`UPDATE repositories SET id = ? WHERE id = ?`).run(newId, oldId);
+  }
+  for (const table of ["commits", "pull_requests", "pull_reviews", "deeds"]) {
+    db.prepare(`UPDATE ${table} SET repo_id = ? WHERE repo_id = ?`).run(newId, oldId);
+  }
+  // Tables keyed on the repo: a row the new id already has wins over the old one
+  for (const table of ["kingdom_layout", "user_subscriptions", "repo_emails", "project_repos"]) {
+    db.prepare(`UPDATE OR IGNORE ${table} SET repo_id = ? WHERE repo_id = ?`).run(newId, oldId);
+    db.prepare(`DELETE FROM ${table} WHERE repo_id = ?`).run(oldId);
+  }
+  db.prepare(`DELETE FROM ignored_repo_checks WHERE repo_id = ?`).run(oldId);
+  console.log(`[Live Sync] ✏️ ${oldId.replace(/^repo-/, "")} is now ${newId.replace(/^repo-/, "")} in Git: its building and history moved with it.`);
+}
 
 /**
  * Instantly registers all users and repositories into SQLite so tables are populated right away
@@ -1828,7 +1929,7 @@ const stmtCheckPRExists = db.prepare(`SELECT 1 FROM pull_requests WHERE id = ?`)
 export const registerReposAndUsers = db.transaction((
   users: Array<{ id: string; username: string; fullName: string; email: string; civilization: string; kingdomTitle: string; cityHallLevel: number; streakDays: number }>,
   userEmails: Array<{ email: string; userId: string }>,
-  repos: Array<{ id: string; name: string; fullName: string; ownerLogin: string; defaultBranch: string; linesCount: number; filesCount: number; commitsCount: number; updatedAt: string }>
+  repos: Array<{ id: string; name: string; fullName: string; ownerLogin: string; defaultBranch: string; linesCount: number; filesCount: number; commitsCount: number; updatedAt: string; gitId?: number | null }>
 ): { newUsers: number; newRepos: number } => {
   const now = new Date().toISOString();
   let newUsers = 0;
@@ -1854,8 +1955,13 @@ export const registerReposAndUsers = db.transaction((
     if (ignored.has(id) || ignored.has(fn) || ignored.has(`repo-${fn}`)) {
       continue;
     }
+    // Renamed or moved to another owner in Git: the same Git repo under a new name keeps its building and history
+    if (typeof r.gitId === "number") {
+      const was = stmtRepoByGitId.get(r.gitId, r.id) as { id: string } | undefined;
+      if (was) renameRepository(was.id, r.id);
+    }
     if (!stmtCheckRepoExists.get(r.id)) newRepos++;
-    stmtUpsertRepo.run(r);
+    stmtUpsertRepo.run({ gitId: null, ...r });
   }
   return { newUsers, newRepos };
 });
@@ -1874,6 +1980,7 @@ export const saveLiveRepoSync = db.transaction((
     filesCount: number;
     commitsCount: number;
     updatedAt: string;
+    gitId?: number | null;
   },
   commits: Array<{
     hash: string;
@@ -1911,7 +2018,9 @@ export const saveLiveRepoSync = db.transaction((
   if (ignored.has(id) || ignored.has(fn) || ignored.has(`repo-${fn}`)) {
     return { newCommits: 0, newPulls: 0 };
   }
-  stmtUpsertRepo.run(repo);
+  stmtUpsertRepo.run({ gitId: null, ...repo });
+  // Read in full: the next sync reads it again only once Git's updated_at moves on
+  db.prepare(`UPDATE repositories SET synced_updated_at = ? WHERE id = ?`).run(repo.updatedAt, repo.id);
   let newCommits = 0;
   let newPulls = 0;
 
@@ -2010,6 +2119,8 @@ export const saveBackfilledRepoCommits = db.transaction((
   }>,
   userEmails: Array<{ email: string; userId: string }> = []
 ): { newCommits: number } => {
+  // Renamed in Git while the backfill read it: the sync moved the repo to its new name, whose own backfill brings these
+  if (!stmtCheckRepoExists.get(repoId)) return { newCommits: 0 };
   let lines = 0;
   let newCommits = 0;
   for (const c of commits) {
@@ -2080,9 +2191,9 @@ export function executeResourceAllocation(kingdoms: DeveloperKingdom[]) {
   // moon gems; at night the drop pool is bigger and the base harvest smaller (GAME_GUIDE §7 Day, night & seasons)
   // The window this harvest closes: harvest windows alternate day / night (a realm day is two harvests)
   const daytime = DAY_PART_EFFECTS[dayPartOfWindow(countHarvests())];
-  const gemOdds = SCARCE_RESOURCES.map((g) => (daytime.favoured.includes(g.key) ? GEM_TILT : 1));
+  const gemOdds = DROPPED_GEMS.map((g) => (daytime.favoured.includes(g.key) ? GEM_TILT : 1));
   let gemRoll = Math.random() * gemOdds.reduce((a, b) => a + b, 0);
-  const scarceDef = SCARCE_RESOURCES.find((_, i) => (gemRoll -= gemOdds[i]) < 0) ?? SCARCE_RESOURCES[SCARCE_RESOURCES.length - 1];
+  const scarceDef = DROPPED_GEMS.find((_, i) => (gemRoll -= gemOdds[i]) < 0) ?? DROPPED_GEMS[DROPPED_GEMS.length - 1];
   const scarcePoolSize = poolKingdoms.length > 0 ? Math.max(Math.round(scarceDef.pool * daytime.scarcePool), poolKingdoms.length) : 0;
 
   // 2. Calculate weekly activity weights
@@ -2782,6 +2893,12 @@ const ARCHON_HONORARY_HALLS = honoraryHalls([
   ]
 ]);
 
+/** Each ruler's XP by realm-time day over the last few days, from the latest realm build (Xal'Vorath's three days) */
+const recentXpByDay = new Map<string, Record<string, number>>();
+const RECENT_XP_WINDOW_MS = 6 * 86_400_000;
+/** XP of every source a ruler earned on a realm-time day (`YYYY-MM-DD`), of the last few days */
+export const xpOnRealmDay = (userId: string, day: string) => recentXpByDay.get(userId)?.[day] ?? 0;
+
 export function getAllKingdomsFromDB(): DeveloperKingdom[] {
   const playStats = playStatsByUser();
   const shields = activeShieldsByUser();
@@ -2825,6 +2942,7 @@ export function getAllKingdomsFromDB(): DeveloperKingdom[] {
     JOIN repositories r ON c.repo_id = r.id
     WHERE c.author_login = ?
        OR ((c.author_email = ? OR c.author_email IN (SELECT email FROM user_emails WHERE user_id = ?))
+           AND ${COMMIT_UNCLAIMED}
            AND NOT EXISTS (SELECT 1 FROM repo_emails re WHERE re.email = lower(c.author_email) AND re.repo_id = c.repo_id))
     ORDER BY julianday(c.committed_at) DESC
   `);
@@ -2851,7 +2969,7 @@ export function getAllKingdomsFromDB(): DeveloperKingdom[] {
 
   // Sealed deed reports (scriptorium.ts): their XP lands on the repo like commit XP
   const stmtUserDeeds = db.prepare(`
-    SELECT d.repo_id, d.xp, d.day, r.name, r.full_name, r.default_branch, r.updated_at AS repo_updated_at
+    SELECT d.repo_id, d.xp, d.day, d.created_at, r.name, r.full_name, r.default_branch, r.updated_at AS repo_updated_at
     FROM deeds d
     JOIN repositories r ON r.id = d.repo_id
     WHERE d.user_id = ? AND d.status = 'sealed'
@@ -2914,11 +3032,32 @@ export function getAllKingdomsFromDB(): DeveloperKingdom[] {
       }
     }
 
+    // 🌑 The last few days' XP by realm-time day, every source (Xal'Vorath's three days of work)
+    const dayXp: Record<string, number> = {};
+    const recentDayFrom = dateKeyIn(now - RECENT_XP_WINDOW_MS, config.realmTimezone);
+    const addDayXp = (at: string | null | undefined, xp: number) => {
+      const t = at ? Date.parse(at) : NaN;
+      if (!(t >= now - RECENT_XP_WINDOW_MS)) return;
+      const day = dateKeyIn(t, config.realmTimezone);
+      dayXp[day] = (dayXp[day] ?? 0) + xp;
+    };
+    for (const c of rawCommits) addDayXp(c.committed_at, commitXp.get(c.hash) ?? 0);
+    for (const pr of rawPRs) addDayXp(pr.state === "merged" ? pr.merged_at || pr.created_at : pr.created_at, prXp(pr.state));
+    for (const rv of rawReviews) addDayXp(rv.submitted_at, XP_RULES.review);
+
     // Sealed deeds add their XP to their repo; a deed is work in that repo, so it builds it like a commit
     const weekAgoDay = weekAgo.slice(0, 10);
     let deedXpTotal = 0;
     let weekDeedXp = 0;
-    for (const d of stmtUserDeeds.all(user.id) as Array<{ repo_id: string; xp: number; day: string; name: string; full_name: string; default_branch?: string; repo_updated_at?: string }>) {
+    // A deed's own day is a UTC day (today or yesterday when written); Xal'Vorath's days are realm-time days, so a
+    // deed counts on the realm day it was written in, or the realm day before for one written for yesterday
+    const deedRealmDay = (d: { day: string; created_at?: string | null }) => {
+      const t = d.created_at ? Date.parse(d.created_at) : NaN;
+      if (!Number.isFinite(t)) return d.day;
+      const back = Math.round((Date.parse(`${new Date(t).toISOString().slice(0, 10)}T00:00:00Z`) - Date.parse(`${d.day}T00:00:00Z`)) / 86_400_000);
+      return Number.isFinite(back) && back >= 0 ? dateKeyIn(t - back * 86_400_000, config.realmTimezone) : d.day;
+    };
+    for (const d of stmtUserDeeds.all(user.id) as Array<{ repo_id: string; xp: number; day: string; created_at?: string | null; name: string; full_name: string; default_branch?: string; repo_updated_at?: string }>) {
       let ra = reposMap.get(d.full_name);
       if (!ra) {
         ra = { id: d.repo_id, name: d.name, fullName: d.full_name, branch: d.default_branch || "main", commits: [], weekCommits: 0, weekAdded: 0, weekDeleted: 0, totalLines: 0, xp: 0, updatedAt: d.repo_updated_at };
@@ -2927,7 +3066,10 @@ export function getAllKingdomsFromDB(): DeveloperKingdom[] {
       ra.xp += d.xp;
       deedXpTotal += d.xp;
       if (d.day >= weekAgoDay) weekDeedXp += d.xp;
+      const realmDay = deedRealmDay(d);
+      if (realmDay >= recentDayFrom) dayXp[realmDay] = (dayXp[realmDay] ?? 0) + d.xp;
     }
+    recentXpByDay.set(user.id, dayXp);
     let commitXpTotal = 0;
     for (const v of commitXp.values()) commitXpTotal += v;
 

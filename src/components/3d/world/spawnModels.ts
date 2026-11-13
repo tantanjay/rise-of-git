@@ -1,6 +1,6 @@
 import { Builder, Gait, IDLE_KIND, Surface } from "@/components/3d/city/parts";
 import { Rng, mulberry32, range } from "@/utils/random";
-import { Add, AddOpts, V3, along, arc, bone, lanternFrame, skull, tail } from "./kitParts";
+import { Add, AddOpts, V3, along, arc, bone, coins, lanternFrame, skull, tail, wheel } from "./kitParts";
 
 /*
  * Roving monsters and bandits on the visual rarity ladder (see docs/MODEL_STYLE.md):
@@ -2243,6 +2243,226 @@ export function buildLadderSpawn(type: string, b: Builder, rng: Rng) {
         for (const t of [-0.7, -0.2, 0.3]) add("sphere", -0.644 * 0.31 * t, 1.05 + 0.765 * 0.31 * t - 0.045, 0.19, 0.09, 0.09, 0.09, "#18181b", { torso: true, mat: "iron", hd: true });
         add("box", -0.24, 0.42, 0.1, 0.17, 0.2, 0.12, "#78350f", { mat: "leather", hd: true });
       }
+      break;
+    }
+  }
+}
+
+/* ------------------------------------------------------------------------- */
+/* Wandering legends: Alistair the merchant and Grimur the master blacksmith  */
+/* ------------------------------------------------------------------------- */
+
+/** The wandering legends (the Royal Codex shows them; they don't walk the map yet) */
+export const LEGEND_TYPES = ["legend-merchant", "legend-blacksmith"] as const;
+export const isLegend = (type: string) => type.startsWith("legend-");
+
+/** A slow loop of a few steps: a legend minds his pitch rather than roaming it */
+const MIND_THE_PITCH: Walk = { radius: 0.18, pace: 0.32 };
+
+/**
+ * A horned pack ox at (x, z) facing +z (~1.2 tall): it shifts about on the spot (a walker on a tiny loop), its legs in
+ * diagonal pairs, its head riding the neck; a dyed wool blanket, gold tassels and a brass bell
+ */
+function packOx(b: Builder, x: number, z: number, rot: number, hide: string, blanket: string, trim: string) {
+  const q = b.walker(x, z, rot, "walk", 0.1, { pace: 0.28 });
+  const add: Add = q.add.bind(q);
+  const neck: AddOpts = { head: { y: 0.82, z: 0.6 } };
+  const dark = shade(hide, 0.7);
+  for (const [lx, lz, leg] of [
+    [-0.18, 0.4, 1],
+    [0.18, 0.4, -1],
+    [-0.18, -0.4, -1],
+    [0.18, -0.4, 1]
+  ] as const) {
+    add("box", lx, 0, lz, 0.15, 0.56, 0.15, dark, { leg, mat: "hide", hdShape: "limb" });
+    add("egg", lx, 0, lz + 0.03, 0.17, 0.08, 0.2, "#1c1917", { leg, hip: 0.56, mat: "bone", hd: true }); // hoof
+  }
+  add("box", 0, 0.5, 0, 0.62, 0.56, 1.3, hide, { mat: "hide", hdShape: "pod" });
+  add("sphere", 0, 0.82, 0.38, 0.5, 0.36, 0.5, hide, { mat: "hide", hdShape: "egg" }); // the hump over the shoulders
+  // The dyed blanket over its back, gold tassels along its hem
+  add("box", 0, 0.88, -0.12, 0.74, 0.24, 0.66, blanket, { mat: "cloth" });
+  for (const sx of [-1, 1]) for (const tz of [-0.36, -0.12, 0.12]) add("drop", sx * 0.39, 0.72, tz, 0.06, 0.15, 0.06, trim, { mat: "cloth", rx: Math.PI, idle: IDLE_KIND.sway, phase: 0.01 + tz * 3 + sx });
+  add("box", 0, 1.12, -0.12, 0.3, 0.06, 0.4, trim, { mat: "gold", hd: true }); // HD: a gilt saddle plate on the blanket
+  // The head, low and heavy, on its neck
+  add("box", 0, 0.66, 0.8, 0.36, 0.34, 0.44, hide, { ...neck, mat: "hide", hdShape: "egg" });
+  add("box", 0, 0.62, 1.06, 0.28, 0.2, 0.16, "#d6c3a5", { ...neck, mat: "hide", hdShape: "snout" }); // pale muzzle
+  for (const sx of [-1, 1]) {
+    add("horn", sx * 0.2, 0.92, 0.76, 0.1, 0.38, 0.1, "#e7e5e4", { ...neck, mat: "bone", rz: sx * -1.15 }); // horns, sweeping out and up
+    add("box", sx * 0.26, 0.84, 0.7, 0.14, 0.06, 0.1, dark, { ...neck, mat: "hide" }); // ears
+    add("sphere", sx * 0.155, 0.78, 0.98, 0.06, 0.06, 0.06, "#1c1917", { ...neck, mat: "gem" }); // eyes
+  }
+  add("sphere", 0, 0.42, 0.9, 0.14, 0.16, 0.14, "#d97706", { ...neck, mat: "gold" }); // brass bell under the throat
+  add("box", 0, 0.92, 0.62, 0.66, 0.1, 0.16, "#57534e", { mat: "leather" }); // the yoke strap over the shoulders
+  add("cyl", 0, 0.62, -0.72, 0.07, 0.5, 0.07, dark, { rx: -0.25, trail: { lag: 0.25, damp: 0.3, root: [0, 0.98, -0.64] } }); // tail
+}
+
+/** Builds one of the LEGEND_TYPES */
+export function buildLegend(type: string, b: Builder, rng: Rng) {
+  const add: Add = b.add.bind(b);
+  switch (type) {
+    case "legend-merchant": {
+      // Alistair's caravan, legendary: a wagon under a crimson-and-gold awning, laden with brass-bound chests,
+      // amphorae, grain and timber, a brass lantern on its ridge; a merchant rug before it with his scales, coin
+      // table and pennants; the ox that pulls it; gold coins circling over it all
+      const CRIMSON = "#b91c1c";
+      const GOLD = "#d4a017";
+      const WOOD = "#7c4a24";
+      const [cx, cz] = [0.2, -0.5];
+      // The rug laid out before the wagon, fringed in gold at its ends
+      add("box", cx, 0, 1.05, 3.2, 0.03, 1.4, "#9f1239", { mat: "cloth" });
+      for (const sx of [-1, 1]) add("box", cx + sx * 1.64, 0, 1.05, 0.08, 0.08, 1.4, "#fbbf24", { mat: "cloth" });
+      // The wagon: its bed, side boards, four spoked wheels and the hitch pole
+      add("box", cx, 0.62, cz, 2.2, 0.3, 1.3, WOOD, { mat: "wood" });
+      for (const sz of [-1, 1]) add("box", cx, 0.92, cz + sz * 0.7, 2.2, 0.25, 0.06, shade(WOOD, 0.85), { mat: "wood" });
+      for (const wx of [-0.75, 0.75])
+        for (const sz of [-1, 1]) {
+          wheel(add, [cx + wx, 0.45, cz + sz * 0.8], [1, 0, 0], [0, 1, 0], 0.45, 0.08, "#3f2a1a", { mat: "wood" });
+          add("cyl", cx + wx, 0.45 - 0.02, cz + sz * 0.9, 0.06, 0.04, 0.06, GOLD, { mat: "gold", hd: true, rx: Math.PI / 2 }); // HD: a brass hub cap
+        }
+      along(add, "cyl", [cx - 1.1, 0.6, cz + 0.1], [-1.75, 0.9, 0.15], 0.07, 0.07, "#57340f", { mat: "wood" });
+      // The awning: four posts and a gable of crimson and gold stripes, a scalloped valance stirring at its front
+      for (const sx of [-1, 1]) for (const sz of [-1, 1]) add("cyl", cx + sx * 1.0, 0.92, cz + sz * 0.58, 0.07, 1.16, 0.07, "#57340f", { mat: "wood" });
+      for (const sz of [-1, 1])
+        for (let i = 0; i < 3; i++) add("box", cx + (i - 1) * 0.8, 2.05, cz + sz * 0.36, 0.8, 0.06, 0.82, i % 2 ? GOLD : CRIMSON, { mat: "cloth", rx: sz * 0.45 });
+      for (let i = 0; i < 9; i++) add("drop", cx - 1.1 + i * 0.275, 1.7, cz + 0.72, 0.2, 0.18, 0.04, i % 2 ? CRIMSON : GOLD, { mat: "cloth", rx: Math.PI, idle: IDLE_KIND.flutter, phase: 0.01 + i * 0.7 });
+      // The brass lantern on the ridge, glowing warm
+      add("cyl", cx, 2.22, cz, 0.05, 0.22, 0.05, "#57340f", { mat: "wood" });
+      add("sphere", cx, 2.46, cz, 0.22, 0.24, 0.22, "#fbbf24", { glow: true, idle: IDLE_KIND.pulse });
+      add("cone", cx, 2.75, cz, 0.3, 0.16, 0.3, "#d97706", { mat: "gold" });
+      lanternFrame(add, cx, 2.44, cz, 0.24, 0.28, "#b45309", { mat: "gold" });
+      // The load: brass-bound chests, amphorae, grain sacks and a bundle of timber
+      add("box", cx + 0.55, 0.92, cz - 0.25, 0.55, 0.38, 0.4, "#7c2d12", { mat: "wood" });
+      for (const bx of [-0.15, 0.15]) add("box", cx + 0.55 + bx, 0.9, cz - 0.25, 0.08, 0.46, 0.5, GOLD, { mat: "gold" });
+      add("box", cx + 0.6, 1.3, cz - 0.25, 0.42, 0.28, 0.32, "#92400e", { mat: "wood" });
+      add("box", cx + 0.6, 1.4, cz - 0.25, 0.5, 0.06, 0.42, GOLD, { mat: "gold", hd: true }); // HD: its lid band
+      for (const [ax, az] of [
+        [-0.3, -0.3],
+        [-0.65, -0.2]
+      ]) {
+        add("egg", cx + ax, 0.92, cz + az, 0.3, 0.46, 0.3, "#c2410c", { mat: "plain" });
+        add("taper", cx + ax, 1.36, cz + az, 0.14, 0.16, 0.14, "#c2410c", { mat: "plain" }); // its neck
+        add("cyl", cx + ax, 1.5, cz + az, 0.16, 0.05, 0.16, "#7c2d12", { mat: "wood", hd: true }); // HD: a stopper
+      }
+      for (const [sx, sz] of [
+        [-0.75, 0.25],
+        [-0.4, 0.3]
+      ])
+        add("egg", cx + sx, 0.92, cz + sz, 0.42, 0.36, 0.36, "#a8895a", { mat: "cloth" });
+      for (const [lz, ly] of [
+        [0.12, 1.0],
+        [0.32, 1.0],
+        [0.22, 1.15]
+      ])
+        add("cyl", cx + 0.45, ly - 0.55, cz + lz, 0.16, 1.1, 0.16, "#a16207", { mat: "wood", rz: Math.PI / 2 });
+      // His brass scales on the rug: a stand and a beam that tips, its pans hanging on chains
+      const [kx, kz] = [cx + 1.25, 1.35];
+      add("cyl", kx, 0.03, kz, 0.3, 0.06, 0.3, "#b45309", { mat: "gold" });
+      add("cyl", kx, 0.09, kz, 0.05, 1.0, 0.05, "#d97706", { mat: "gold" });
+      add("box", kx, 1.09, kz, 0.8, 0.04, 0.04, "#d97706", { mat: "gold", idle: IDLE_KIND.sway, sync: 1 });
+      for (const sx of [-1, 1]) {
+        add("box", kx + sx * 0.38, 0.78, kz, 0.015, 0.31, 0.015, "#78716c", { mat: "dull", idle: IDLE_KIND.sway, sync: 1 });
+        add("cyl", kx + sx * 0.38, 0.72, kz, 0.26, 0.03, 0.26, "#d97706", { mat: "gold", idle: IDLE_KIND.sway, sync: 1 });
+      }
+      // A little counting table with stacks of coin
+      add("box", cx - 1.0, 0.03, 1.4, 0.6, 0.42, 0.4, "#5b3a1e", { mat: "wood" });
+      for (const [tx, tz, n] of [
+        [-0.15, -0.05, 4],
+        [0.05, 0.08, 6],
+        [0.18, -0.06, 3]
+      ])
+        add("cyl", cx - 1.0 + tx, 0.45, 1.4 + tz, 0.11, n * 0.025, 0.11, "#fbbf24", { mat: "gold" });
+      coins(add, mulberry32(4401), cx - 1.0, 0.45, 1.4, 0.22, 5, "#fbbf24", { mat: "gold", hd: true }, 0.08);
+      // Market pennants at the rug's front corners
+      for (const sx of [-1, 1]) {
+        add("cyl", cx + sx * 1.55, 0.03, 1.72, 0.04, 1.3, 0.04, "#57340f", { mat: "wood" });
+        add("box", cx + sx * 1.55 + 0.18, 1.08, 1.72, 0.34, 0.2, 0.02, sx < 0 ? GOLD : "#1d4ed8", { mat: "cloth", idle: IDLE_KIND.flutter });
+      }
+      // Gold coins circling slowly over the wagon
+      for (let i = 0; i < 6; i++) {
+        const a = (i / 6) * Math.PI * 2;
+        add("cyl", cx + Math.cos(a) * 1.5, 2.7 + (i % 2) * 0.3, cz + Math.sin(a) * 1.5, 0.2, 0.03, 0.2, "#fde047", { glow: true, rx: Math.PI / 2, idle: IDLE_KIND.spin, pivot: [cx, cz], phase: 0.01 + a });
+      }
+      packOx(b, -2.2, -0.1, 0.1, "#6b4226", CRIMSON, GOLD);
+      // Alistair himself in a royal-blue robe and crimson sleeves, a gold sash, a wide hat with a plume, his purse in hand
+      const look: FigureLook = { skin: "#c68b59", tunic: "#1e3a8a", sleeves: "#7f1d1d", legs: "#44403c", boots: "#3f2a1a", belt: GOLD, eyes: "#1c1917" };
+      const { add: fa, hand } = figure(b, cx + 0.35, 1.25, range(rng, -0.3, 0.3), look, 1.12, MIND_THE_PITCH);
+      fa("cone", 0, 0.12, 0, 0.62, 0.52, 0.44, "#1e3a8a", { mat: "cloth" }); // the robe's skirt
+      fa("cyl", 0, 1.4, 0, 0.64, 0.04, 0.64, "#7f1d1d", { mat: "cloth" }); // hat brim
+      fa("cyl", 0, 1.44, 0, 0.3, 0.2, 0.3, "#7f1d1d", { mat: "cloth" }); // its crown
+      fa("cyl", 0, 1.47, 0, 0.36, 0.06, 0.36, GOLD, { mat: "gold" }); // its gold band
+      fa("drop", 0.14, 1.58, -0.06, 0.07, 0.34, 0.05, "#fbbf24", { rz: -0.5, mat: "cloth" }); // the plume
+      fa("sphere", 0.31, 0.32, 0.12, 0.2, 0.22, 0.2, GOLD, { ...hand(1), mat: "gold", hd: false }); // his purse
+      pouch(fa, hand(1), 1, "#7f1d1d"); // HD: a velvet purse on its cord
+      arc(fa, [0, 0.95, 0.04], [1, 0, 0], [0, -0.4, 0.92], 0.17, 0.2, Math.PI - 0.2, 6, 0.03, GOLD, { torso: true, mat: "gold", hd: true }); // HD: a gold chain of office
+      break;
+    }
+    case "legend-blacksmith": {
+      // Grimur's travelling forge, legendary: a hearth of glowing coals on a cart with massive iron-tyred wheels,
+      // a hood and chimney that smokes, a working bellows; a runic anvil on its stump throwing blue sparks, a red-hot
+      // bar on it; a quench barrel that steams; a rack of half-quenched blades; Grimur, towering, on his great hammer
+      const IRON = "#27272a";
+      const [cx, cz] = [-0.4, -0.5];
+      // The cart: a heavy timber bed bound in iron on four massive wheels with iron tyres
+      add("box", cx, 0.75, cz, 2.0, 0.35, 1.4, "#5b3a1e", { mat: "wood" });
+      for (const bx of [-0.7, 0, 0.7]) add("box", cx + bx, 0.7, cz, 0.08, 0.46, 1.5, IRON, { mat: "iron" });
+      for (const wx of [-0.7, 0.7])
+        for (const sz of [-1, 1]) {
+          const c: V3 = [cx + wx, 0.6, cz + sz * 0.82];
+          wheel(add, c, [1, 0, 0], [0, 1, 0], 0.6, 0.12, "#3f2a1a", { mat: "wood" }, 8);
+          arc(add, c, [1, 0, 0], [0, 1, 0], 0.63, 0, Math.PI * 2, 14, 0.07, IRON, { mat: "iron" }); // the iron tyre
+        }
+      // The hearth: dressed stone, a bed of coals that throbs, embers rising off it
+      add("box", cx - 0.05, 1.1, cz, 1.1, 0.55, 1.0, "#57534e", { mat: "masonry" });
+      add("box", cx - 0.05, 1.6, cz, 0.8, 0.1, 0.7, "#f97316", { glow: true, idle: IDLE_KIND.pulse });
+      const hr = mulberry32(5303);
+      for (let i = 0; i < 6; i++) add("boulder", cx - 0.05 + (hr() - 0.5) * 0.6, 1.66, cz + (hr() - 0.5) * 0.5, 0.12, 0.08, 0.1, "#292524", { mat: "stone", hd: true }); // HD: lumps of coal
+      for (let i = 0; i < 5; i++) add("octa", cx - 0.05 + (i - 2) * 0.14, 1.75, cz + ((i % 2) - 0.5) * 0.3, 0.07, 0.1, 0.07, "#fb923c", { glow: true, idle: IDLE_KIND.smoke, phase: 0.01 + i * 1.25 });
+      // Its hood and chimney behind, smoking
+      add("taper", cx - 0.05, 1.7, cz - 0.38, 0.8, 0.55, 0.36, "#3f3f46", { mat: "iron" });
+      add("cyl", cx - 0.05, 2.25, cz - 0.38, 0.24, 0.95, 0.24, "#3f3f46", { mat: "iron" });
+      add("cyl", cx - 0.05, 3.1, cz - 0.38, 0.34, 0.1, 0.34, IRON, { mat: "iron" }); // its cap ring
+      smokeAt(b, cx - 0.05, 3.3, cz - 0.38, 0.8, "#57534e");
+      // The bellows beside the hearth, its top board rocking as it pumps
+      add("box", cx + 0.75, 1.1, cz, 0.42, 0.22, 0.7, "#78350f", { mat: "leather" });
+      add("box", cx + 0.75, 1.37, cz, 0.48, 0.05, 0.76, "#a16207", { mat: "wood", idle: IDLE_KIND.sway });
+      along(add, "cyl", [cx + 0.54, 1.2, cz], [cx + 0.45, 1.3, cz], 0.07, 0.07, IRON, { mat: "iron" }); // its nozzle into the hearth
+      // The runic anvil on its stump, a red-hot bar on its face, blue runes and sparks
+      const [ax, az] = [0.95, 0.75];
+      add("cyl", ax, 0, az, 0.62, 0.5, 0.62, "#6b4226", { mat: "wood" });
+      add("box", ax, 0.5, az, 0.44, 0.08, 0.32, "#4b5563", { mat: "steel" });
+      add("box", ax, 0.58, az, 0.22, 0.14, 0.18, "#4b5563", { mat: "steel" });
+      add("box", ax, 0.72, az, 0.6, 0.16, 0.24, "#4b5563", { mat: "steel" });
+      add("cone", ax + 0.47, 0.8 - 0.17, az, 0.18, 0.34, 0.16, "#4b5563", { mat: "steel", rz: -Math.PI / 2 }); // its horn
+      for (const rx of [-0.15, 0, 0.15]) add("box", ax + rx, 0.76, az + 0.14, 0.06, 0.07, 0.06, "#60a5fa", { glow: true, idle: IDLE_KIND.pulse, phase: 0.01 + rx * 9 });
+      add("box", ax - 0.05, 0.88, az, 0.36, 0.04, 0.06, "#fb923c", { glow: true, idle: IDLE_KIND.pulse });
+      for (let i = 0; i < 4; i++) add("octa", ax + (i - 1.5) * 0.12, 0.95, az + ((i % 2) - 0.5) * 0.1, 0.06, 0.09, 0.06, "#93c5fd", { glow: true, idle: IDLE_KIND.smoke, phase: 0.01 + i * 1.6 });
+      orbit(b, ax, az, 0.75, 1.3, 4, "#93c5fd", 0.08);
+      // The quench barrel, steaming
+      add("cyl", 1.75, 0, -0.25, 0.55, 0.6, 0.55, "#7c4a24", { mat: "wood" });
+      for (const y of [0.1, 0.42]) add("cyl", 1.75, y, -0.25, 0.65, 0.06, 0.65, IRON, { mat: "iron" });
+      add("cyl", 1.75, 0.6, -0.25, 0.46, 0.05, 0.46, "#1e40af", { mat: "gem" });
+      smokeAt(b, 1.75, 0.75, -0.25, 0.45, "#e5e7eb");
+      // A rack of half-quenched blades and a breastplate
+      const [rx0, rz0] = [-2.1, 0.75];
+      for (const sx of [-1, 1]) add("cyl", rx0 + sx * 0.45, 0, rz0, 0.08, 1.6, 0.08, "#57340f", { mat: "wood" });
+      add("box", rx0, 1.5, rz0, 1.0, 0.08, 0.08, "#57340f", { mat: "wood" });
+      for (const bx of [-0.27, 0.27]) {
+        add("blade", rx0 + bx, 0.75, rz0, 0.04, 0.7, 0.12, "#9ca3af", { mat: "steel", rx: Math.PI });
+        add("octa", rx0 + bx, 0.7, rz0, 0.07, 0.12, 0.07, "#f97316", { glow: true, idle: IDLE_KIND.pulse, phase: 0.01 + bx * 5 }); // its tip, still glowing
+      }
+      add("cyl", rx0, 1.3, rz0, 0.02, 0.2, 0.02, "#78716c", { mat: "dull" });
+      add("egg", rx0, 0.85, rz0, 0.38, 0.45, 0.18, "#6b7280", { mat: "iron" });
+      // Grimur: towering, soot-dark, a leather apron and a red-grey beard, leaning on his runed two-handed hammer
+      const look: FigureLook = { skin: "#d4a07a", tunic: "#3f3f46", legs: "#292524", boots: "#1c1917", belt: "#57534e", eyes: "#1c1917" };
+      const { add: fa, hand } = figure(b, 1.7, 0.85, -0.6 + range(rng, -0.15, 0.15), look, 1.42, MIND_THE_PITCH);
+      fa("box", 0, 0.28, 0.17, 0.5, 0.66, 0.06, "#78350f", { torso: true, mat: "leather" }); // apron
+      fa("box", 0, 0.95, 0.15, 0.3, 0.3, 0.14, "#9a3412", { mat: "fur" }); // beard
+      fa("drop", 0, 0.72, 0.18, 0.16, 0.28, 0.1, "#9a3412", { mat: "fur", rx: Math.PI, hd: true }); // HD: its braided point
+      for (const side of [-1, 1] as const) fa("box", side * 0.31, 0.62, 0.01, 0.17, 0.15, 0.19, "#52525b", { ...hand(side), mat: "iron" }); // bracers
+      // The hammer: its head on the ground before him, its long haft up through his fist
+      along(fa, "cyl", [0.36, 0.2, 0.34], [0.31, 0.66, 0.02], 0.06, 0.06, "#57340f", { ...hand(1), mat: "wood" });
+      fa("box", 0.36, 0.02, 0.36, 0.34, 0.22, 0.24, "#3f3f46", { ...hand(1), mat: "iron" });
+      fa("box", 0.36, 0.08, 0.5, 0.12, 0.1, 0.04, "#60a5fa", { ...hand(1), glow: true, idle: IDLE_KIND.pulse }); // a rune on its face
       break;
     }
   }

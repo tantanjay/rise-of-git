@@ -10,6 +10,7 @@ import { HdPost } from "@/components/3d/HdPost";
 import { loadHdModels } from "@/components/3d/world/hdModelsLoader";
 import type { SingularityAction } from "@/components/3d/world/HighGraphicsSingularity";
 import { graphics } from "@/utils/graphics";
+import { WORLD_SCALE } from "@/utils/worldGeometry";
 
 /* ------------------------------------------------------------------------- */
 /* The login screen's HD flyover: a drone flight over the realm as it stands  */
@@ -70,15 +71,17 @@ const TITAN_DEPTH = -40;
 const LIGHT_IN: [number, number] = [0.6, 2.4];
 
 const v = (x: number, y: number, z: number) => new THREE.Vector3(x, y, z);
+/** A point over the provinces, spread out with the realm (WORLD_SCALE) */
+const w = (x: number, y: number, z: number) => v(x * WORLD_SCALE, y, z * WORLD_SCALE);
 /** The drone's flight from the sky, round the four provinces (human, elf, dwarf, orc) and in from the south */
 const FLIGHT = new THREE.CatmullRomCurve3(
-  [v(0, 165, 175), v(-72, 62, 98), v(-92, 32, 18), v(-62, 28, -78), v(6, 34, -98), v(82, 30, -62), v(98, 32, 14), v(66, 30, 88), v(16, 26, 72), v(0, 23, 57)],
+  [v(0, 165, 175), w(-72, 62, 98), w(-92, 32, 18), w(-62, 28, -78), w(6, 34, -98), w(82, 30, -62), w(98, 32, 14), w(66, 30, 88), v(16, 26, 72), v(0, 23, 57)],
   false,
   "centripetal"
 );
 /** Where it looks along the way (the province it passes, then the Voidrift) */
 const GAZE = new THREE.CatmullRomCurve3(
-  [v(0, 0, 0), v(-44, 0, 44), v(-50, 2, 0), v(-44, 2, -44), v(0, 2, -52), v(44, 2, -44), v(50, 2, 0), v(44, 2, 44), v(8, 8, 22), TITAN_FOCUS],
+  [v(0, 0, 0), w(-44, 0, 44), w(-50, 2, 0), w(-44, 2, -44), w(0, 2, -52), w(44, 2, -44), w(50, 2, 0), w(44, 2, 44), v(8, 8, 22), TITAN_FOCUS],
   false,
   "centripetal"
 );

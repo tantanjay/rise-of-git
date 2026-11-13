@@ -8,6 +8,7 @@ import { sound } from "@/hooks/useSound";
 import { formatCompact } from "@/utils/format";
 import { RealmTimeButton } from "./RealmTimeButton";
 import { DisasterChip } from "./DisasterChip";
+import { HorrorChip } from "./HorrorChip";
 import { fogHint, fogRange, fogText, fogTreasury } from "@/utils/fog";
 import { OverseerMedal, OVERSEER_TITLE, ARCHON_TITLE } from "./OverseerMedal";
 import { CivFrame, ArchonSeal } from "./CivFrame";
@@ -602,6 +603,17 @@ export function TopHUD({
   onSignIn,
   onSignOut
 }: TopHUDProps) {
+  // The bar wraps to more rows on a phone as chips come and go: the banners below it stand on its real height (--hud-bottom)
+  const barRef = useRef<HTMLElement>(null);
+  useEffect(() => {
+    const bar = barRef.current;
+    if (!bar) return;
+    const measure = () => document.documentElement.style.setProperty("--hud-bottom", `${Math.ceil(bar.getBoundingClientRect().height)}px`);
+    measure();
+    const watch = new ResizeObserver(measure);
+    watch.observe(bar);
+    return () => watch.disconnect();
+  }, []);
   // An army marching on the signed-in player comes first (incoming alert), then their own march
   const { warMarch, incoming } = useMemo(() => {
     if (!me) return { warMarch: null, incoming: false };
@@ -644,7 +656,7 @@ export function TopHUD({
   const intel = fog?.report ?? null;
 
   return (
-    <header className="absolute top-0 inset-x-0 z-40 bg-slate-950/85 backdrop-blur-md border-b border-slate-800/80 shadow-xl select-none">
+    <header ref={barRef} className="absolute top-0 inset-x-0 z-40 bg-slate-950/85 backdrop-blur-md border-b border-slate-800/80 shadow-xl select-none">
       {/* From lg one line (labels hide below 1440 px or 2xl, the kingdom picker gives way), so the bar never grows over the
           banners and notices below it */}
       <div className="flex flex-wrap items-center gap-1.5 sm:gap-2 lg:gap-1.5 2xl:gap-2 px-3 sm:px-4 py-2">
@@ -788,8 +800,9 @@ ${fogHint(intel)}`
         </button>
 
         {/* Right cluster */}
-        <div className="shrink-0 flex items-center gap-1 sm:gap-2 lg:gap-1.5 2xl:gap-2 ml-auto lg:ml-0">
+        <div className="shrink-0 flex flex-wrap justify-end items-center max-w-full gap-1 sm:gap-2 lg:gap-1.5 2xl:gap-2 ml-auto lg:ml-0">
           <DisasterChip myCiv={me ? kingdoms.find((k) => k.id === me.id)?.civilization : null} />
+          <HorrorChip me={me ? { id: me.id, civ: kingdoms.find((k) => k.id === me.id)?.civilization } : null} kingdoms={kingdoms} />
           <RealmTimeButton myCiv={me ? kingdoms.find((k) => k.id === me.id)?.civilization : null} />
           {me && <CallToArmsPill until={proclamationsOf(kingdoms.find((k) => k.id === me.id)).callToArmsUntil} />}
           <WarPill march={warMarch} incoming={incoming} unread={unreadBattleReports} onClick={onOpenWarRoom} />

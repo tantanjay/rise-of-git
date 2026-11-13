@@ -12,6 +12,8 @@ import type { ComposerKind } from "./AttackModal";
 import { NodeStatusLine } from "./ScoutIntel";
 import { CombatBanner } from "./CombatBanner";
 import { StationedTroops } from "./StationedTroops";
+import { HorrorDays } from "./HorrorChip";
+import { HORROR, horrorWait, useRealmHorrors } from "@/utils/horror";
 import { ShieldAlert, Sparkles, MapPin, Clock, Coins, Swords, Compass, Landmark, Flame } from "lucide-react";
 
 export type ModalNPCData = MapNPC | NPCIslandData;
@@ -174,6 +176,8 @@ export function NPCModal({ island, onClose, onMarch, report, nodeStatus, myCiv, 
               ? { ...a, soon: mapNpc.landmarkState.phase === "rising" ? "Being built up — shielded until the scaffolding comes down" : "Leaving the realm — nothing left to fight for" }
             : (a.kind === "attack" || a.kind === "rally") && ownGate
               ? { ...a, soon: "Your own civilization's border gate — it can't be attacked or rallied on" }
+              : (a.kind === "attack" || a.kind === "rally") && mapNpc?.horrorPhase === "approach"
+              ? { ...a, soon: "Still on the road: it can be fought once it reaches the gates" }
               : (a.kind === "attack" || a.kind === "rally") && bossStatus?.dead
               ? { ...a, soon: "It has fallen — the next boss wakes here soon" }
               : (a.kind === "attack" || a.kind === "rally") && npcKingdomStatus?.burning
@@ -209,7 +213,7 @@ export function NPCModal({ island, onClose, onMarch, report, nodeStatus, myCiv, 
               <h3 className="text-lg font-bold font-medieval text-slate-100 tracking-wide truncate">{island.name}</h3>
               {category && (
                 <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-slate-800/90 text-slate-200 border border-slate-600/50 uppercase font-semibold">
-                  {catTheme?.label}
+                  {mapNpc?.horrorPhase ? "The Overseers' Horror" : catTheme?.label}
                 </span>
               )}
               {rarity && (
@@ -268,10 +272,10 @@ export function NPCModal({ island, onClose, onMarch, report, nodeStatus, myCiv, 
             <span>{location}</span>
           </span>
 
-          {expiresAt && (
+          {(expiresAt || mapNpc?.heldOver) && (
             <span className="px-2 py-1 rounded-lg bg-amber-950/60 border border-amber-600/50 text-amber-300 font-mono flex items-center gap-1.5">
               <Clock className="w-3.5 h-3.5 text-amber-400" />
-              <span>{category === "resource" ? "Wave Node · gone at the next respawn" : "Roving Spawn"}</span>
+              <span>{mapNpc?.heldOver ? "Staying until the match here ends" : category === "resource" ? "Wave Node · gone at the next respawn" : "Roving Spawn"}</span>
             </span>
           )}
 
@@ -297,7 +301,8 @@ export function NPCModal({ island, onClose, onMarch, report, nodeStatus, myCiv, 
           <FogNotice lines={[["Chest", chest.band === "hoard" ? "a great hoard" : `a ${chest.band} chest`]]} scoutedAt={chest.scoutedAt} />
         ) : null}
 
-        {category === "boss" && bossStatus && <BossPanel boss={bossStatus} now={now} />}
+        {category === "boss" && bossStatus && <BossPanel boss={bossStatus} now={now} horror={Boolean(mapNpc?.horrorPhase)} />}
+        {mapNpc?.horrorPhase && <HorrorPanel npcId={mapNpc.id} now={now} />}
         {category === "kingdom" && npcKingdomStatus && <NpcKingdomPanel k={npcKingdomStatus} realm={mapNpc?.realm} scouted={Boolean(report)} now={now} ownGate={ownGate} />}
         {/* Troops on duty: only the gate's own civilization sees them (others only through the fog) */}
         {ownGate && mapNpc && activeMarches && <StationedTroops marches={activeMarches} hostId={mapNpc.id} viewerId={myId} cap={GATE_REINFORCE_CAP[myCiv!]} />}
@@ -411,7 +416,30 @@ function clock(ms: number): string {
 }
 
 /** World boss: shared HP (public), skills, respawn and rotation timers, top damage dealers this life; while it slumbers, its last fall and who wakes next */
-function BossPanel({ boss, now: openedAt }: { boss: BossStatus; now: number }) {
+/** 🌑 Xal'Vorath: who it is coming for, how long it has left and the target's three days of work */
+function HorrorPanel({ npcId, now }: { npcId: string; now: number }) {
+  const h = useRealmHorrors().find((x) => x.npcId === npcId);
+  if (!h) return null;
+  const siege = h.phase === "siege";
+  return (
+    <div className="p-3 rounded-xl border border-violet-500/40 bg-violet-950/20 text-xs text-violet-100 space-y-2">
+      <div className="font-bold text-violet-200">
+        Level {h.level}
+        {h.split > 1 ? ` · split among ${h.split} kingdoms` : ""} · {siege ? `burns ${h.targetName}'s kingdom in ${horrorWait(h.siegeEndsAt - now)}` : `at ${h.targetName}'s gates in ${horrorWait(h.arrivesAt - now)}`}
+      </div>
+      {siege ? (
+        <p className="text-slate-300">{h.targetName} and the rulers of their civilization can march on it or raise a rally. It keeps its wounds from one battle to the next.</p>
+      ) : (
+        <>
+          <p className="text-slate-300">If {h.targetName} earns {HORROR.XP_PER_DAY} XP on each of these days it is driven back on arrival:</p>
+          <HorrorDays h={h} />
+        </>
+      )}
+    </div>
+  );
+}
+
+function BossPanel({ boss, now: openedAt, horror = false }: { boss: BossStatus; now: number; /** Xal'Vorath: no rotation, no Vengeance */ horror?: boolean }) {
   const pct = boss.maxHp ? Math.round((boss.hp / boss.maxHp) * 100) : 0;
   // A slumbering zone counts down to its next boss waking, live
   const [now, setNow] = useState(openedAt);
@@ -469,14 +497,16 @@ function BossPanel({ boss, now: openedAt }: { boss: BossStatus; now: number }) {
           <li key={sk}>✴️ {sk}</li>
         ))}
         <li>🪨 Colossus Hide: armies land (City Hall ÷ 25)² of their blows (City Hall 15: 36% · 20: 64% · 25: full)</li>
-        <li className={boss.vengeance > 0 ? "text-orange-300 font-semibold" : ""}>
-          🔥 Vengeance{boss.vengeance > 0 ? ` ×${boss.vengeance}: +${boss.vengeance * 10}% HP, ATK and DEF` : ": none yet"} · each kill this week makes the next boss here +10% stronger (resets Sunday)
-          {boss.dead && boss.next && boss.next.vengeance > 0 ? ` · ${boss.next.name} wakes with +${boss.next.vengeance * 10}%` : ""}
-        </li>
+        {!horror && (
+          <li className={boss.vengeance > 0 ? "text-orange-300 font-semibold" : ""}>
+            🔥 Vengeance{boss.vengeance > 0 ? ` ×${boss.vengeance}: +${boss.vengeance * 10}% HP, ATK and DEF` : ": none yet"} · each kill this week makes the next boss here +10% stronger (resets Sunday)
+            {boss.dead && boss.next && boss.next.vengeance > 0 ? ` · ${boss.next.name} wakes with +${boss.next.vengeance * 10}%` : ""}
+          </li>
+        )}
       </ul>
       <p className="text-[11px] text-slate-300">
-        Its wounds stay for everyone — no healing until it falls (then the next boss of the pool wakes here 24 h later) or the weekly rotation in {formatLongDuration(boss.rotatesAt - now)}. The killing army or
-        rally carries its hoard home by load; everyone who wounded it this life shares the bounty by damage dealt.
+        {horror ? "Its wounds stay for everyone, from one battle to the next." : <>Its wounds stay for everyone — no healing until it falls (then the next boss of the pool wakes here 24 h later) or the weekly rotation in {formatLongDuration(boss.rotatesAt - now)}.</>} The killing army or
+        rally carries its hoard home by load; everyone who wounded it this life shares the bounty by damage dealt.{horror ? " The ruler who wounded it most takes the Heart of the Void." : ""}
       </p>
       {boss.topDamage.length > 0 && !(boss.dead && kill) && (
         <div className="text-[11px] font-mono text-slate-300">

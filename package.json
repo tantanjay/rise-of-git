@@ -10,6 +10,9 @@
     "dev": "concurrently \"tsx watch --clear-screen=false server/src/index.ts\" \"vite\"",
     "build": "vite build",
     "check:models": "tsx scripts/check-models.ts",
+    "check:map": "tsx scripts/check-map.ts",
+    "check:db": "tsx scripts/check-db.ts",
+    "backup:db": "tsx scripts/backup-db.ts",
     "lint": "eslint src server/src scripts && tsc -p tsconfig.json --noEmit && tsc -p tsconfig.server.json --noEmit",
     "start": "tsx server/src/index.ts",
     "sim:war": "tsx scripts/sim-war.ts",
@@ -18,8 +21,10 @@
     "sim:balance": "tsx scripts/sim-balance.ts",
     "sim:arts": "tsx scripts/sim-arts.ts",
     "disaster": "tsx scripts/call-disaster.ts",
+    "horror": "tsx scripts/call-horror.ts",
     "sim:leaderboard": "tsx scripts/sim-leaderboard.ts",
     "sim:scouting": "tsx scripts/sim-scouting.ts",
+    "sim:siege": "tsx scripts/sim-siege.ts",
     "backfill:leaderboard": "tsx scripts/backfill-leaderboard.ts"
   },
   "dependencies": {

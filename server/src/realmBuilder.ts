@@ -13,8 +13,11 @@ import {
   loadRepoEmailRules,
   getCommitsToAnalyse,
   setMeaningfulLines,
-  getIgnoredRepoIds
-  , pinGitAccounts
+  getIgnoredRepoIds,
+  pinGitAccounts,
+  isCommitStored,
+  isRepoBackfilled,
+  getSyncedRepoVersions
 } from "./db.js";
 import { git } from "./gitService.js";
 import { meaningfulLines } from "./diffQuality.js";
@@ -131,15 +134,19 @@ export async function buildRealmFromGit(
     }
   }
 
-  // 2. All secondary / verified emails registered in Git
+  // 2. Every verified email registered in Git. An unverified one could be anybody's address (a colleague's commit
+  // email, a laptop default), so it never claims commits: an administrator matches those (Developer Emails)
   for (const ae of rawAdminEmails) {
-    if (ae.email && ae.username) {
+    if (ae.email && ae.username && ae.verified === true) {
       const email = ae.email.toLowerCase();
       const userId = ae.username.toLowerCase();
       userEmails.push({ email, userId });
       emailToUserId.set(email, userId);
     }
   }
+
+  // What Git itself says (primary and verified emails): each repo below lays the stored links over a copy of it
+  const gitEmailOwners = new Map(emailToUserId);
 
   // 3. Existing discovered emails from SQLite
   try {
@@ -154,8 +161,6 @@ export async function buildRealmFromGit(
     // ignore
   }
 
-  // Admin per-repo matches of shared emails, checked before every other rule
-  const repoEmailRules = loadRepoEmailRules();
 
   // Lookup map for fallback matching by author name (supports "First Last" and "Last, First")
   const userByName = new Map<string, string>();
@@ -189,7 +194,8 @@ export async function buildRealmFromGit(
     linesCount: 0,
     filesCount: 0,
     commitsCount: 0,
-    updatedAt: r.updated_at || new Date().toISOString()
+    updatedAt: r.updated_at || new Date().toISOString(),
+    gitId: typeof r.id === "number" ? r.id : null
   }));
 
   const { newUsers, newRepos } = registerReposAndUsers(dbUsers, userEmails, initialDbRepos);
@@ -218,22 +224,36 @@ export async function buildRealmFromGit(
   const reviewSince = Date.now() - 7 * 86_400_000;
 
   // Only query commits & PRs for repos updated in Git within the live lookback window (e.g. last 3 days)
+  // Repos updated in Git within the lookback window, and any repo Git has updated since a live sync last read it,
+  // however long ago: after downtime longer than the window, a repo pushed while the server was off is still read
+  const syncedVersions = getSyncedRepoVersions();
   const activeRepos = rawRepos.filter((r) => {
     if (!r.updated_at) return true;
     const updated = Date.parse(r.updated_at);
-    return Number.isNaN(updated) || updated >= since.getTime();
+    return Number.isNaN(updated) || updated >= since.getTime() || syncedVersions.get(`repo-${r.full_name}`) !== r.updated_at;
   });
 
   let liveDoneCount = 0;
 
   await mapPool(activeRepos, 6, async (repo) => {
+    // Once the backfill has read a repo, older commits that only now reach its default branch (a branch merged late,
+    // a rebase) are picked up here; before that the backfill brings them
+    const backfilled = isRepoBackfilled(`repo-${repo.full_name}`);
     const [commits, pulls] = await Promise.all([
-      fetchRepoCommits(repo, since),
+      fetchRepoCommits(repo, since, backfilled ? { isKnown: isCommitStored } : {}),
       fetchRepoPulls(repo)
     ]);
 
     commitsScanned += commits.length;
     let repoLines = 0;
+
+    // The links as they stand once Git has answered, not when the sync started: an email an administrator matched,
+    // moved or unassigned meanwhile is honoured here (a sync takes minutes). Admin per-repo matches come first.
+    const emailToUserId = new Map(gitEmailOwners);
+    for (const ee of stmtGetAllUserEmails.all() as Array<{ email: string; user_id: string }>) {
+      emailToUserId.set(ee.email.toLowerCase(), ee.user_id.toLowerCase());
+    }
+    const repoEmailRules = loadRepoEmailRules();
 
     const repoCommits: Array<{
       hash: string;
@@ -359,7 +379,8 @@ export async function buildRealmFromGit(
         linesCount: repoLines,
         filesCount: 0,
         commitsCount: repoCommits.length,
-        updatedAt: repo.updated_at || new Date().toISOString()
+        updatedAt: repo.updated_at || new Date().toISOString(),
+        gitId: typeof repo.id === "number" ? repo.id : null
       },
       repoCommits,
       repoPulls,

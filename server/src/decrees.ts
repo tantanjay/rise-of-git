@@ -344,11 +344,10 @@ export function breakShieldOnAttack(attackerId: string, targetName: string) {
 /* ⛈️ Punish                                                                  */
 /* ------------------------------------------------------------------------- */
 
-export function punishKingdom(params: { actorId: string; targetId: unknown; days: unknown; lowBirth?: unknown; highDeath?: unknown; wrath?: unknown; kingdoms: DeveloperKingdom[] }) {
+export function punishKingdom(params: { actorId: string; targetId: unknown; days: unknown; lowBirth?: unknown; highDeath?: unknown; kingdoms: DeveloperKingdom[] }) {
   const k = targetKingdom(params.kingdoms, params.targetId);
   if (k.isArchon) throw new Error("The Archon of the Realm is above every decree.");
   if (isSpecialUserId(k.id)) throw new Error("Special Overseers take nothing from the harvest; there is nothing to punish.");
-  if (params.wrath) throw new Error("Wrath (sending the mythical horror) is not in the game yet.");
   const days = wholeDays(params.days);
   const lowBirth = Boolean(params.lowBirth);
   const highDeath = Boolean(params.highDeath);
@@ -428,7 +427,7 @@ export function grantFestival(params: { actorId: string; targetId: unknown; king
 /* Audit                                                                      */
 /* ------------------------------------------------------------------------- */
 
-const AUDIT_KINDS = ["decree_announcement", "decree_gift", "decree_shield", "decree_lift_shield", "decree_punish", "decree_lift_punishment", "decree_festival", "decree_chronicle", "shield_broken"];
+const AUDIT_KINDS = ["decree_announcement", "decree_gift", "decree_shield", "decree_lift_shield", "decree_punish", "decree_lift_punishment", "decree_festival", "decree_chronicle", "decree_wrath", "decree_lift_wrath", "shield_broken"];
 
 function summarize(kind: string, p: any, targetName: string | null): string {
   switch (kind) {
@@ -450,6 +449,10 @@ function summarize(kind: string, p: any, targetName: string | null): string {
       return `🎉 Gave ${targetName} a Festival`;
     case "decree_chronicle":
       return `📖 Published the Weekly Chronicle "${p.title}" (week of ${p.weekKey})`;
+    case "decree_wrath":
+      return `🌑 Sent Xal'Vorath, Level ${p.level}, at ${Array.isArray(p.targets) ? p.targets.join(", ") : targetName}`;
+    case "decree_lift_wrath":
+      return `🌑 Called Xal'Vorath back from ${p.targetName}`;
     case "shield_broken":
       return `💥 Shield shattered by attacking ${p.targetName}`;
     default:

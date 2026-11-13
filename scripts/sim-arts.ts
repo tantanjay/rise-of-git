@@ -18,7 +18,7 @@
  *   6. The client's copy of the rules (src/utils/battleArts.ts) matches the server.
  *   7. Every Art, Finale, showing Instinct and status has its look on the spell-effects kit (src/utils/spellFx.ts).
  */
-import { ARTS, BOSS_KIT_SIZE, FINALES, INSTINCTS, KIT_SIZES, POWER_BUDGET, STATUS_RULES, UNIT_RARITIES, FINALE_LAST_STAND, STATUS_MAX_SOURCES, BOSS_PARALYZE_MULT, BLEED_GROWTH, UnitKit, UnitRarity, kitProblems } from "../server/src/battleArts";
+import { ARTS, BOSS_KIT_SIZE, FINALES, INSTINCTS, KIT_SIZES, POWER_BUDGET, STATUS_RULES, UNIT_RARITIES, FINALE_LAST_STAND, STATUS_MAX_SOURCES, BOSS_PARALYZE_MULT, BOSS_FREEZE_CHILL, BLEED_GROWTH, UnitKit, UnitRarity, kitProblems } from "../server/src/battleArts";
 import { LiveAttackerStack, LiveDefenderState, seededRandom, stepBattleRound } from "../server/src/combat";
 import { BOSS_UNITS, COMBAT, NPC_KINGDOM_KITS, bossKitFor, npcKingdomKitFor, npcKitFor } from "../server/src/warConfig";
 import { DYNAMIC_15M_TEMPLATES } from "../server/src/worldMapGenerator";
@@ -216,6 +216,7 @@ const mirrorOk =
   CLIENT.FINALE_LAST_STAND === FINALE_LAST_STAND &&
   CLIENT.STATUS_MAX_SOURCES === STATUS_MAX_SOURCES &&
   CLIENT.BOSS_PARALYZE_MULT === BOSS_PARALYZE_MULT &&
+  CLIENT.BOSS_FREEZE_CHILL === BOSS_FREEZE_CHILL &&
   CLIENT.BLEED_GROWTH === BLEED_GROWTH &&
   CLIENT.BATTLE_ROUNDS === COMBAT.MAX_ROUNDS &&
   CLIENT.RALLY_BATTLE_ROUNDS === COMBAT.RALLY_MAX_ROUNDS;

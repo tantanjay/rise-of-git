@@ -96,7 +96,7 @@ export interface ScarceResourceDef {
   emblem: string;
   pool: number;
   description: string;
-  rarity: 'rare' | 'epic' | 'legendary';
+  rarity: 'rare' | 'epic' | 'legendary' | 'mythical';
 }
 
 export interface ActivitySummary {
@@ -384,6 +384,8 @@ export interface RealmStatus {
   realmTime?: RealmTime;
   /** The world disaster in force, or the next one once the herald has warned of it (null: none) */
   disaster?: DisasterStatus | null;
+  /** Xal'Vorath out in the realm, with each target's work so far */
+  horrors?: HorrorStatus[];
   /** The latest weekly story, for its banner while it is under a week old (null: none) */
   chronicle?: Pick<ChronicleStory, 'id' | 'title' | 'weekKey' | 'publishedAt'> | null;
 }
@@ -522,12 +524,18 @@ export interface MapNPC {
   fallenName?: string;
   resourceYield?: Record<string, number>;
   expiresAt?: string;
+  /** Its window has passed, but a battle or workers still hold it on the map until the match ends */
+  heldOver?: boolean;
   bossIndex?: number;
   /** Index picked at map generation; `bossIndex` is this week's after the rotation */
   bossBaseIndex?: number;
   bossRotationPool?: Array<{ name: string; subtitle: string; emblem: string; description: string; type: string }>;
+  /** Xal'Vorath only: on the road to its target, or waiting at the gates */
+  horrorPhase?: 'approach' | 'siege';
+  /** Xal'Vorath only: the way it faces, radians about the up axis (0 is +z) */
+  horrorHeading?: number;
   /** Mobs / bandits: the pack, fogged to a band unless scouted */
-  /** `health`: share of the full pack's HP left (0–1), public so anyone can see a wounded pack and finish it off */
+  /** `health`: share of the full pack's HP left (0–1, in steps of 10%), public so anyone can see a wounded pack and finish it off */
   pack?: { unitName: string; band: string; wounded: boolean; health: number; exact: number | null; scoutedAt: number | null };
   /** Treasure: chest size band (contents only from a scout report) */
   chest?: { band: 'small' | 'large' | 'hoard'; scoutedAt: number | null };
@@ -547,6 +555,8 @@ export interface FlatWorldMapData {
   kingdomPlacements: Record<string, { x: number; z: number }>;
   bufferZones: MapBufferZone[];
   npcs: MapNPC[];
+  /** Where the scenery sites stand (the server picks the spots so spawns keep clear; the client picks what fits each) */
+  scenery?: Array<{ x: number; z: number }>;
 }
 
 export const SCARCE_RESOURCES: ScarceResourceDef[] = [
@@ -645,6 +655,14 @@ export const SCARCE_RESOURCES: ScarceResourceDef[] = [
     pool: 50,
     description: "Ever-burning celestial plumage radiating the immortal heat of primordial rebirth.",
     rarity: "legendary"
+  },
+  {
+    key: "void_heart",
+    name: "Heart of the Void",
+    emblem: "🌑",
+    pool: 0,
+    description: "The black core of a slain Xal'Vorath, still pulling faintly at everything near it. The rarest trophy in the realm.",
+    rarity: "mythical"
   }
 ];
 
@@ -1301,9 +1319,32 @@ export interface Rally {
 
 /** Intel brought home by scouts (GAME_GUIDE §13): exact numbers as they were when the scouts saw the target */
 /** Kinds of herald notices (GAME_GUIDE §14) */
-export type BroadcastKind = 'boss_slain' | 'while_away' | 'gift' | 'announcement' | 'punishment' | 'shield' | 'gate_fallen' | 'scouts_caught' | 'scouts_deceived' | 'gate_duty' | 'refund' | 'season_change' | 'deed' | 'omen' | 'festival' | 'disaster' | 'chronicle' | 'mercenary' | 'armory' | 'champion';
+export type BroadcastKind = 'boss_slain' | 'while_away' | 'gift' | 'announcement' | 'punishment' | 'shield' | 'gate_fallen' | 'scouts_caught' | 'scouts_deceived' | 'gate_duty' | 'refund' | 'season_change' | 'deed' | 'omen' | 'festival' | 'disaster' | 'chronicle' | 'mercenary' | 'armory' | 'champion' | 'horror' | 'horror_event';
 
 export type DisasterKind = 'blight' | 'tempest' | 'blood_moon' | 'plague' | 'barren';
+
+/** /status → `horrors`: Xal'Vorath out in the realm, one per kingdom it was sent at (GAME_GUIDE §15 *Wrath*) */
+export interface HorrorStatus {
+  id: number;
+  /** Its id on the map */
+  npcId: string;
+  targetId: string;
+  targetName: string;
+  level: number;
+  /** How many kingdoms the Wrath named (its stats are shared out among them) */
+  split: number;
+  phase: 'approach' | 'siege';
+  startedAt: number;
+  arrivesAt: number;
+  /** When the hour at the gates is out */
+  siegeEndsAt: number;
+  hp: number;
+  maxHp: number;
+  /** The target's XP on each of the three realm-time days that can drive it back */
+  days: Array<{ day: string; xp: number; met: boolean }>;
+  /** Which of them is today: -1 before the first, `days.length` after the last */
+  dayIndex: number;
+}
 
 /** /status → `disaster`: the world disaster in force, or the next one once the herald has warned of it (an hour ahead) */
 export interface DisasterStatus {
@@ -1691,6 +1732,29 @@ export interface WatchDevRow {
   lastActivity: string | null;
   daysSince: number | null;
   quiet: boolean;
+}
+export interface WatchPlayerRow {
+  userId: string;
+  name: string;
+  civ: string;
+  /** Game actions (marches, rallies, trades, upgrades…) per day of the period */
+  actionsByDay: number[];
+  /** Minutes with the realm open per day of the period */
+  minutesByDay: number[];
+  actions: number;
+  minutes: number;
+  /** Days with any action or time in the realm */
+  playDays: number;
+  /** When their client last polled the realm (ISO), any time */
+  lastSeenAt: string | null;
+}
+/** The Watchtower's Game activity (Admins only): who plays the game, per day */
+export interface WatchPlay {
+  period: WatchPeriod;
+  days: string[];
+  players: WatchPlayerRow[];
+  /** First day time in the realm was recorded (null: none yet) */
+  presenceSince: string | null;
 }
 export interface WatchGlance {
   period: WatchPeriod;

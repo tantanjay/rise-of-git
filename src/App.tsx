@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useRef, useState } from "react";
+import { lazy, startTransition, Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { useGameState } from "./hooks/useGameState";
 import { Scene3D } from "./components/3d/Scene3D";
 import type { WorldFocusRequest } from "./components/3d/FlatWorldMap3D";
@@ -10,12 +10,16 @@ import { MercenaryCampModal } from "./components/ui/MercenaryCampModal";
 import { isOwnCamp } from "./utils/mercenaries";
 import { HeraldModal } from "./components/ui/HeraldModal";
 import { WhatsNewModal } from "./components/ui/WhatsNewModal";
+import { LoadingScreen } from "@/components/ui/LoadingScreen";
+import { markRealmShown, nextPaint, setLoadStage, type LoadStage } from "@/utils/loadingScreen";
 import { unseenNotices, type UpdateNotice } from "./components/ui/updateNotices";
 import { CityDirectory } from "./components/ui/CityDirectory";
 import { MarchQueue } from "./components/ui/MarchQueue";
 import { AdminWarningBanner } from "./components/ui/AdminWarningBanner";
 import { QueueBanner } from "./components/ui/QueueBanner";
 import { ChronicleBanner } from "./components/ui/ChronicleBanner";
+import { HorrorBanners } from "./components/ui/HorrorBanner";
+import { setHorrorFocusHandler, setHorrorGuideHandler } from "@/utils/horror";
 import { DeedIcon, OmenIcon } from "./components/ui/realmIcons";
 import type { KingdomTab } from "./components/ui/KingdomModal";
 import type { ComposerKind } from "./components/ui/AttackModal";
@@ -43,10 +47,16 @@ const OmensModal = deferred(() => import("./components/ui/OmensModal"), "OmensMo
 const SendOmenModal = deferred(() => import("./components/ui/OmensModal"), "SendOmenModal", (p) => p.open);
 // The Royal Codex (guide, catalog, 3D previews, soundtracks) loads on first open
 const CodexModal = lazy(() => import("./components/ui/CodexModal").then((m) => ({ default: m.CodexModal })));
+const VoidGateTeaser = lazy(() => import("./components/ui/VoidGateTeaser"));
 import { MapNPC, DeveloperKingdom, NethergardeSpire, ScoutReport } from "./types";
 import { combatAt, interpolateMarchPosition } from "./utils/war";
+import { closeVoidGateTeaser, useVoidGateTeaser } from "@/utils/voidGate";
+
+/** After the loading screen first fades, the realm is seen alone this long before a popup may open */
+const REALM_SETTLE_MS = 600;
 
 export function App() {
+  const voidGateOpen = useVoidGateTeaser();
   const [selectedNPC, setSelectedNPC] = useState<MapNPC | null>(null);
   // March composer (attack / scout) and its target: a Voidrift NPC kingdom, a kingdom or a map NPC
   const [marchTarget, setMarchTarget] = useState<{ spire?: NethergardeSpire; kingdom?: DeveloperKingdom; npc?: MapNPC; kind: ComposerKind } | null>(null);
@@ -73,6 +83,12 @@ export function App() {
   /** 📣 What's New: shown once a visit while a notice isn't dismissed ("auto"), or reopened from the ☰ menu ("all") */
   const [whatsNew, setWhatsNew] = useState<{ mode: "auto" | "all"; notices: UpdateNotice[] } | null>(null);
   const whatsNewChecked = useRef(false);
+  // The game's windows are mounted (after the realm's data is in), the 3D view is still building, and the loading
+  // screen has gone at least once: popups, the herald and their sounds wait for that, so none opens over a half-built
+  // page while it is busy
+  const [gameMounted, setGameMounted] = useState(false);
+  const [sceneLoading, setSceneLoading] = useState(true);
+  const [realmShown, setRealmShown] = useState(false);
   const [isDecreesOpen, setIsDecreesOpen] = useState(false);
   const [isRenownOpen, setIsRenownOpen] = useState(false);
   // 🪶 Scriptorium (tab + tree selection it opens on) and the managers' deed review list
@@ -90,6 +106,7 @@ export function App() {
     setSelectedBuilding,
     worldMap,
     rovingNPCs,
+    horrorNPCs,
     nodeStatuses,
     bossStatuses,
     realmShift,
@@ -99,6 +116,7 @@ export function App() {
     resetLandmarks,
     moveRealms,
     viewMode,
+    setViewMode,
     status,
     loading,
     kingdomSwitching,
@@ -181,9 +199,22 @@ export function App() {
   }, [realmShift]);
 
   // Entering a city drops any pending world-map focus, so coming back shows the whole realm again
+  // Switching views tears one down before the other builds, which blocks for a moment: the loading screen goes up and
+  // paints first, then the switch runs (the view's own loader takes over from there)
+  const [switchingTo, setSwitchingTo] = useState<"world_map" | "city_view" | null>(null);
+  const behindLoadingScreen = (stage: LoadStage, to: "world_map" | "city_view", run: () => void) => {
+    setLoadStage(stage, 0, true);
+    setSceneLoading(true);
+    setSwitchingTo(to);
+    nextPaint().then(() => {
+      setSwitchingTo(null);
+      run();
+    });
+  };
   const enterCity = (id: string) => {
     setWorldFocusRequest(null);
-    enterKingdomCity(id);
+    if (viewMode === "city_view" && currentKingdom?.id === id) return enterKingdomCity(id);
+    behindLoadingScreen(viewMode === "city_view" ? "realm" : "castles", "city_view", () => enterKingdomCity(id));
   };
 
   // Kingdom picker: on the world map the camera glides to that castle (and it becomes the current
@@ -251,30 +282,55 @@ export function App() {
   // A kingdom or Voidrift NPC opened from a list may be stale: show the latest copy (fresh fog / scout report)
   const marchKingdom = marchTarget?.kingdom ? kingdoms.find((k) => k.id === marchTarget.kingdom!.id) ?? marchTarget.kingdom : null;
   const marchSpire = marchTarget?.spire ? spires.find((sp) => sp.id === marchTarget.spire!.id) ?? marchTarget.spire : null;
-  const marchNpc = marchTarget?.npc ? rovingNPCs.find((n) => n.id === marchTarget.npc!.id) ?? marchTarget.npc : null;
+  const marchNpc = marchTarget?.npc ? rovingNPCs.find((n) => n.id === marchTarget.npc!.id) ?? horrorNPCs.find((n) => n.id === marchTarget.npc!.id) ?? marchTarget.npc : null;
 
-  // 📣 What's New: once per visit, as soon as the realm is in, if any notice is not dismissed for good
+  // 🌑 Xal'Vorath's panels ask for it to be shown: fly the map there, and open the panel it is attacked from
   useEffect(() => {
-    if (whatsNewChecked.current || loading || !currentKingdom) return;
+    setHorrorFocusHandler((npcId, openPanel) => {
+      const npc = horrorNPCs.find((n) => n.id === npcId);
+      if (!npc) return;
+      setViewMode("world_map");
+      setWorldFocusRequest({ x: npc.x, z: npc.z, nonce: Date.now() });
+      if (openPanel) setSelectedNPC(npc);
+    });
+    return () => setHorrorFocusHandler(null);
+  }, [horrorNPCs, setViewMode]);
+  useEffect(() => {
+    setHorrorGuideHandler(() => {
+      setCodexSection("guide");
+      setCodexChapter("wrath");
+      setIsCodexOpen(true);
+    });
+    return () => setHorrorGuideHandler(null);
+  }, []);
+  // Its event window tells these, so the herald doesn't tell them again: they go straight to the War Room's Notices
+  const heraldNotices = useMemo(() => notices.filter((n) => n.kind !== "horror_event"), [notices]);
+  useEffect(() => {
+    const told = notices.filter((n) => n.kind === "horror_event").map((n) => n.id);
+    if (told.length) markNoticesRead(told);
+  }, [notices, markNoticesRead]);
+
+  // 📣 What's New: once per visit, once the realm is on screen (the loading screen gone), if any notice is not
+  // dismissed for good
+  useEffect(() => {
+    if (whatsNewChecked.current || !realmShown || loading || !currentKingdom) return;
     whatsNewChecked.current = true;
     const unseen = unseenNotices();
     if (unseen.length) setWhatsNew({ mode: "auto", notices: unseen });
-  }, [loading, currentKingdom]);
+  }, [realmShown, loading, currentKingdom]);
 
-  // First Git sync can take a while on big servers — show progress instead of an empty globe
-  if (!currentKingdom && (loading || status?.syncing || kingdoms.length === 0)) {
-    return (
-      <div className="w-screen h-screen bg-slate-950 flex flex-col items-center justify-center text-slate-300 font-medieval text-xl gap-4 text-center px-6">
-        <div className="text-6xl animate-bounce">🌍</div>
-        <p>
-          Summoning live kingdoms from Git — reading users, repositories & commits…
-        </p>
-        {status?.lastError && <p className="text-sm font-mono text-red-400">⚠️ {status.lastError}</p>}
-      </div>
-    );
-  }
+  // The loading screen covers everything until the realm's first frames are on screen. The game's windows mount
+  // behind it in a transition, so React builds them in small slices and the page stays responsive meanwhile (the
+  // first Git sync can also take a while on big servers: the screen says so)
+  const booting = !currentKingdom && (loading || Boolean(status?.syncing) || kingdoms.length === 0);
+  useEffect(() => {
+    if (booting || gameMounted) return;
+    const t = setTimeout(() => startTransition(() => setGameMounted(true)), 50);
+    return () => clearTimeout(t);
+  }, [booting, gameMounted]);
+  const loaderUp = !gameMounted || sceneLoading;
 
-  return (
+  const game = gameMounted && (
     <div className="relative w-screen h-screen overflow-hidden bg-slate-950 font-sans">
       <TopHUD
         viewMode={viewMode}
@@ -287,7 +343,7 @@ export function App() {
           if (viewMode === "world_map") {
             if (currentKingdom) enterCity(currentKingdom.id);
           } else {
-            returnToWorldMap();
+            behindLoadingScreen("land", "world_map", returnToWorldMap);
           }
         }}
         onSelectKingdom={pickKingdom}
@@ -329,6 +385,7 @@ export function App() {
         kingdomLoading={kingdomSwitching}
         worldMap={worldMap}
         rovingNPCs={rovingNPCs}
+        horrorNPCs={horrorNPCs}
         nodeStatuses={nodeStatuses}
         bossStatuses={bossStatuses}
         npcKingdomStatuses={npcKingdomStatuses}
@@ -344,10 +401,11 @@ export function App() {
         onSelectNPC={(npc) => setSelectedNPC(npc)}
         onSelectSpire={(spire) => setMarchTarget({ spire, kind: "attack" })}
         onOpenDevProfile={(k) => setDevProfileKingdom(k)}
+        onLoaderChange={setSceneLoading}
       />
 
       {/* Top-Left Stack: Admin Warning Banner + Active View Banner (MarchQueue or CityDirectory) */}
-      <div className="absolute top-[6.75rem] lg:top-[4.5rem] left-3 sm:left-4 z-20 w-72 max-w-[calc(100vw-1.5rem)] flex flex-col gap-2 pointer-events-none">
+      <div className="absolute top-[calc(var(--hud-bottom,6.75rem)+0.5rem)] lg:top-[4.5rem] left-3 sm:left-4 z-20 w-72 max-w-[calc(100vw-1.5rem)] flex flex-col gap-2 pointer-events-none">
         {isAdmin && totalAdminWarnings > 0 && (
           <div className="pointer-events-auto">
             <AdminWarningBanner
@@ -374,6 +432,8 @@ export function App() {
             <QueueBanner count={newOmens} Icon={OmenIcon} tone="star" label={`${newOmens} new ${newOmens === 1 ? "omen" : "omens"}`} title="Feedback sent by the realm's developers" onClick={() => setIsOmensOpen(true)} />
           </div>
         )}
+
+        <HorrorBanners me={myKingdom ? { id: myKingdom.id, civ: myKingdom.civilization } : null} kingdoms={kingdoms} ready={realmShown && !loading && !activeBattleReport && heraldNotices.length === 0} />
 
         {status?.chronicle && (
           <div className="pointer-events-auto">
@@ -606,7 +666,7 @@ export function App() {
       />
 
       <BattleReportModal
-        report={activeBattleReport}
+        report={realmShown ? activeBattleReport : null}
         me={me}
         onBack={
           reportFromWarRoom
@@ -638,7 +698,7 @@ export function App() {
         }}
       />
 
-      {!loading && !activeBattleReport && <HeraldModal notices={notices} onRead={markNoticesRead} />}
+      {realmShown && !loading && !activeBattleReport && <HeraldModal notices={heraldNotices} onRead={markNoticesRead} />}
 
       {/* What's New waits for the herald's notices and any open report, so the two never stack */}
       {whatsNew && (whatsNew.mode === "all" || (!activeBattleReport && notices.length === 0)) && (
@@ -653,6 +713,13 @@ export function App() {
             setIsCodexOpen(true);
           }}
         />
+      )}
+
+      {/* 🌀 The Void Gate's teaser: opened by clicking the gate on the map */}
+      {voidGateOpen && (
+        <Suspense fallback={null}>
+          <VoidGateTeaser onClose={closeVoidGateTeaser} />
+        </Suspense>
       )}
 
       {isCodexOpen && (
@@ -732,7 +799,7 @@ export function App() {
       )}
       <SendOmenModal open={isSendOmenOpen} onClose={() => setIsSendOmenOpen(false)} />
       {isAdmin && <OmensModal open={isOmensOpen} onClose={() => setIsOmensOpen(false)} onChanged={refreshStatus} />}
-      {isManager && <WatchtowerModal open={isWatchtowerOpen} onClose={() => setIsWatchtowerOpen(false)} />}
+      {isManager && <WatchtowerModal open={isWatchtowerOpen} isAdmin={Boolean(isAdmin)} onClose={() => setIsWatchtowerOpen(false)} />}
 
       {isAdmin && (
         <AdminWarningsModal
@@ -756,6 +823,25 @@ export function App() {
         />
       )}
     </div>
+  );
+
+  return (
+    <>
+      {game}
+      <LoadingScreen
+        active={loaderUp}
+        view={switchingTo ?? viewMode}
+        syncing={booting && Boolean(status?.syncing)}
+        error={status?.lastError}
+        quick={realmShown}
+        onHidden={() =>
+          setTimeout(() => {
+            setRealmShown(true);
+            markRealmShown();
+          }, REALM_SETTLE_MS)
+        }
+      />
+    </>
   );
 }
 

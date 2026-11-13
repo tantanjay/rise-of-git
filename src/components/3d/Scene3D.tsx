@@ -9,6 +9,7 @@ import { SeasonWeather } from "./SeasonWeather";
 import { DisasterWeather } from "./DisasterWeather";
 import { HdPost } from "./HdPost";
 import { CrispLabels } from "./CrispLabels";
+import { setLoadStage } from "@/utils/loadingScreen";
 import { DeveloperKingdom, RepoBuilding, FlatWorldMapData, MapNPC, NethergardeSpire, ActiveMarch, NodeStatus, BossStatus, NpcKingdomStatus } from "@/types";
 
 interface Scene3DProps {
@@ -19,6 +20,7 @@ interface Scene3DProps {
   kingdomLoading?: boolean;
   worldMap: FlatWorldMapData | null;
   rovingNPCs?: MapNPC[];
+  horrorNPCs?: MapNPC[];
   nodeStatuses?: Record<string, NodeStatus>;
   bossStatuses?: Record<string, BossStatus>;
   /** Buffer realms and frontier gates: a burning one is drawn on fire (a gate broken open) */
@@ -36,6 +38,8 @@ interface Scene3DProps {
   onSelectNPC?: (npc: MapNPC) => void;
   onSelectSpire?: (spire: NethergardeSpire) => void;
   onOpenDevProfile?: (kingdom: DeveloperKingdom) => void;
+  /** Told whether the view is still building (the app's loading screen covers it meanwhile); a stable function */
+  onLoaderChange?: (up: boolean) => void;
 }
 
 /** The view's callbacks: the canvas below reads the latest through a ref, so a parent re-render never reaches it */
@@ -48,18 +52,26 @@ export function Scene3D({
   onSelectNPC,
   onSelectSpire,
   onOpenDevProfile,
+  onLoaderChange,
   ...data
 }: Scene3DProps) {
   const { viewMode, currentKingdom, kingdomLoading = false } = data;
   // World map: set while the continent builds. City: the loader stays up from the click until the
   // current kingdom's city has drawn its first frames (worked out during render, so it never flickers)
-  const [sceneLoading, setSceneLoading] = useState(false);
+  const [sceneLoading, setSceneLoading] = useState(viewMode === "world_map");
   const [readyCityId, setReadyCityId] = useState<string | null>(null);
   useEffect(() => {
     if (viewMode !== "city_view") setReadyCityId(null);
   }, [viewMode]);
   const showLoader =
     viewMode === "world_map" ? sceneLoading : kingdomLoading || !currentKingdom || readyCityId !== currentKingdom.id;
+  // The loading screen (in the app, over everything) follows the loader; each new load starts its bar over at the
+  // step it begins with: the kingdom's data, the land, or straight to raising the city
+  useLayoutEffect(() => {
+    if (showLoader) setLoadStage(viewMode === "city_view" && kingdomLoading ? "realm" : viewMode === "world_map" ? "land" : "castles", 0, true);
+    onLoaderChange?.(showLoader);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [showLoader]);
 
   // The app re-renders on every 3 s poll (the status line) with new inline callbacks; the whole 3D tree (hundreds of
   // components and every <Html> label) re-rendered with it. Callbacks go through a ref and stable wrappers, and the
@@ -91,14 +103,6 @@ export function Scene3D({
         onMapLoading={setSceneLoading}
         onCityReady={setReadyCityId}
       />
-
-      {/* Building a view briefly blocks the page; this spinner is a CSS animation, so it keeps turning */}
-      {showLoader && (
-        <div className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-3 bg-slate-950/80 pointer-events-none">
-          <div className="w-12 h-12 rounded-full border-4 border-amber-500/25 border-t-amber-400 animate-spin" />
-          <p className="font-medieval text-amber-200 text-sm tracking-wide">{viewMode === "world_map" ? "Charting the realm…" : "Raising the kingdom…"}</p>
-        </div>
-      )}
     </div>
   );
 }
@@ -118,6 +122,7 @@ const SceneCanvas = memo(function SceneCanvas({
   kingdomLoading = false,
   worldMap,
   rovingNPCs,
+  horrorNPCs,
   nodeStatuses,
   bossStatuses,
   npcKingdomStatuses,
@@ -153,7 +158,7 @@ const SceneCanvas = memo(function SceneCanvas({
       }}
       camera={
         viewMode === "world_map"
-          ? { position: [0, 85, 95], fov: 48, near: 0.5, far: 600 }
+          ? { position: [0, 100, 112], fov: 48, near: 0.5, far: 600 }
           : { position: [0, 22, 26], fov: 45, near: 0.1, far: 450 }
       }
     >
@@ -174,7 +179,7 @@ const SceneCanvas = memo(function SceneCanvas({
         makeDefault
         maxPolarAngle={Math.PI / 2.15}
         minDistance={viewMode === "world_map" ? 25 : 10}
-        maxDistance={viewMode === "world_map" ? 185 : 45}
+        maxDistance={viewMode === "world_map" ? 220 : 45}
         mouseButtons={{ LEFT: THREE.MOUSE.PAN, MIDDLE: THREE.MOUSE.DOLLY, RIGHT: THREE.MOUSE.ROTATE }}
         touches={{ ONE: THREE.TOUCH.PAN, TWO: THREE.TOUCH.DOLLY_ROTATE }}
         screenSpacePanning={false}
@@ -188,6 +193,7 @@ const SceneCanvas = memo(function SceneCanvas({
           kingdoms={kingdoms}
           worldMap={worldMap}
           rovingNPCs={rovingNPCs}
+          horrorNPCs={horrorNPCs}
           nodeStatuses={nodeStatuses}
           bossStatuses={bossStatuses}
           npcKingdomStatuses={npcKingdomStatuses}

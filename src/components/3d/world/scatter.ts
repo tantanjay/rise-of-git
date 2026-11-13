@@ -3,6 +3,7 @@ import { mulberry32, range } from "@/utils/random";
 import { Builder, IDLE_KIND, SceneOut, emptyScene } from "@/components/3d/city/parts";
 import { FORGE_VENTS, LAVA_FISSURES, RIVER_FROM_Z, RegionKind, SEA_LEVEL, Terrain, riverX } from "./terrain";
 import { GATE_MODEL_TYPES, GATE_WALL_SPAN, gateCiv, gateWallArc, gateWallPoints } from "./gates";
+import { VOID_GATE, WORLD_HALF } from "@/utils/worldGeometry";
 
 /** How likely a vegetation/rock prop is per sample, by dominant region */
 const DENSITY: Record<RegionKind, number> = {
@@ -165,6 +166,8 @@ export function buildWorldScatter(terrain: Terrain, worldMap: FlatWorldMapData |
     for (const p of Object.values(worldMap.kingdomPlacements)) avoid.push({ x: p.x, z: p.z, r: 4.8 });
     for (const n of [...worldMap.npcs, ...extraNPCs]) avoid.push({ x: n.x, z: n.z, r: 4.2 });
   }
+  // The Void Gate's ground
+  avoid.push({ x: VOID_GATE.x, z: VOID_GATE.z, r: 5.5 });
 
   // The frontier gates' border walls: no tree or rock grows on them
   const gates = (worldMap?.npcs ?? []).filter((n) => GATE_MODEL_TYPES.has(n.type));
@@ -173,7 +176,7 @@ export function buildWorldScatter(terrain: Terrain, worldMap: FlatWorldMapData |
   // Stone bridges where Valoria's river runs between two dry banks (decided first, so no tree grows on them)
   const bridges: Array<{ z: number; x: number; deck: number }> = [];
   // Walk down the river and take up to three crossings at least 8 apart
-  for (let z = 34; z <= 76 && bridges.length < 3; z += 0.5) {
+  for (let z = RIVER_FROM_Z + 4; z <= WORLD_HALF - 12 && bridges.length < 3; z += 0.5) {
     if (bridges.some((b) => Math.abs(b.z - z) < 8)) continue;
     const x = riverX(z);
     const west = terrain.height(x - 3.2, z);
@@ -195,8 +198,9 @@ export function buildWorldScatter(terrain: Terrain, worldMap: FlatWorldMapData |
   const scorched = (x: number, z: number) => hot.some((a) => Math.hypot(a.x - x, a.z - z) < a.r);
 
   const step = 2.2;
-  for (let gx = -78; gx <= 78; gx += step) {
-    for (let gz = -78; gz <= 78; gz += step) {
+  const reach = WORLD_HALF - 8;
+  for (let gx = -reach; gx <= reach; gx += step) {
+    for (let gz = -reach; gz <= reach; gz += step) {
       const x = gx + range(rng, -0.9, 0.9);
       const z = gz + range(rng, -0.9, 0.9);
       const roll = rng();
@@ -204,7 +208,8 @@ export function buildWorldScatter(terrain: Terrain, worldMap: FlatWorldMapData |
       if (h < SEA_LEVEL + 0.25) continue;
       if (blocked(x, z) || scorched(x, z)) continue;
       const { kind, edge } = dominant(terrain.weights(x, z));
-      if (roll > DENSITY[kind]) continue;
+      // The wild rim grows the region beside it, thinner: the same trees, rocks and cacti, set farther apart
+      if (roll > DENSITY[kind] * (1 - 0.55 * terrain.wild(x, z))) continue;
       if ((kind === "dwarf" || kind === "mountains") && h > 6.2) continue; // above the tree line
 
       const b = new Builder(out, x, h - 0.05, z, rng() * Math.PI * 2);

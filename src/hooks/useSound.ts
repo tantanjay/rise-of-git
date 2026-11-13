@@ -1,8 +1,19 @@
 // Zero-dependency 8-Bit Web Audio Synthesizer Hook
 
+/** Game Settings' Sound switch, remembered in this browser ("off" mutes) */
+const SOUND_KEY = "sound-enabled";
+
+function storedEnabled(): boolean {
+  try {
+    return localStorage.getItem(SOUND_KEY) !== "off";
+  } catch {
+    return true;
+  }
+}
+
 class SoundEngine {
   private ctx: AudioContext | null = null;
-  public enabled = true;
+  public enabled = storedEnabled();
 
   private init() {
     if (!this.ctx) {
@@ -10,19 +21,35 @@ class SoundEngine {
       if (AudioCtx) this.ctx = new AudioCtx();
     }
     if (this.ctx && this.ctx.state === "suspended") {
-      this.ctx.resume();
+      void this.ctx.resume().catch(() => {});
     }
+  }
+
+  /**
+   * Whether a sound may play now. A browser may hold a page's audio back (the context stays suspended) until its
+   * first click or key press: a sound then (the herald's fanfare for notices waiting at load) would wait and play
+   * late, on that first click, so it is skipped instead. Where the browser lets the page play at once, it plays.
+   */
+  private ready(): boolean {
+    if (!this.enabled) return false;
+    this.init();
+    if (!this.ctx) return false;
+    const activation = (navigator as Navigator & { userActivation?: { hasBeenActive: boolean } }).userActivation;
+    return this.ctx.state === "running" || !activation || activation.hasBeenActive;
   }
 
   toggle(): boolean {
     this.enabled = !this.enabled;
+    try {
+      localStorage.setItem(SOUND_KEY, this.enabled ? "on" : "off");
+    } catch {
+      // storage unavailable: the choice lasts for this visit
+    }
     return this.enabled;
   }
 
   playStep() {
-    if (!this.enabled) return;
-    this.init();
-    if (!this.ctx) return;
+    if (!this.ready() || !this.ctx) return;
 
     const osc = this.ctx.createOscillator();
     const gain = this.ctx.createGain();
@@ -40,9 +67,7 @@ class SoundEngine {
   }
 
   playHarvest() {
-    if (!this.enabled) return;
-    this.init();
-    if (!this.ctx) return;
+    if (!this.ready() || !this.ctx) return;
 
     const notes = [523.25, 659.25, 783.99, 1046.50]; // C5, E5, G5, C6
     notes.forEach((freq, i) => {
@@ -62,9 +87,7 @@ class SoundEngine {
   }
 
   playWater() {
-    if (!this.enabled) return;
-    this.init();
-    if (!this.ctx) return;
+    if (!this.ready() || !this.ctx) return;
 
     const freqs = [350, 480, 410, 620];
     freqs.forEach((f, i) => {
@@ -85,9 +108,7 @@ class SoundEngine {
   }
 
   playSquash() {
-    if (!this.enabled) return;
-    this.init();
-    if (!this.ctx) return;
+    if (!this.ready() || !this.ctx) return;
 
     const osc = this.ctx.createOscillator();
     const gain = this.ctx.createGain();
@@ -105,9 +126,7 @@ class SoundEngine {
   }
 
   playLevelUp() {
-    if (!this.enabled) return;
-    this.init();
-    if (!this.ctx) return;
+    if (!this.ready() || !this.ctx) return;
 
     const notes = [440, 554.37, 659.25, 880];
     notes.forEach((freq, i) => {
@@ -128,9 +147,7 @@ class SoundEngine {
 
   /** Defeat: three falling notes like a fading horn */
   playDefeat() {
-    if (!this.enabled) return;
-    this.init();
-    if (!this.ctx) return;
+    if (!this.ready() || !this.ctx) return;
     const notes = [330, 262, 196];
     notes.forEach((freq, i) => {
       const at = this.ctx!.currentTime + i * 0.22;
@@ -150,9 +167,7 @@ class SoundEngine {
 
   /** Herald notice: a short rising fanfare on the horn */
   playHerald() {
-    if (!this.enabled) return;
-    this.init();
-    if (!this.ctx) return;
+    if (!this.ready() || !this.ctx) return;
     const notes = [392, 523.25, 659.25];
     notes.forEach((freq, i) => {
       const at = this.ctx!.currentTime + i * 0.14;
@@ -215,9 +230,7 @@ class SoundEngine {
    * Finale. The voice colours it (fire roars low, frost rings high, thunder cracks).
    */
   playSpell(kind: "cast" | "impact" | "finale", voice: string) {
-    if (!this.enabled) return;
-    this.init();
-    if (!this.ctx) return;
+    if (!this.ready() || !this.ctx) return;
     const v = SPELL_VOICES[voice] ?? SPELL_VOICES.fire;
     const at = this.ctx.currentTime;
     if (kind === "impact") {
@@ -233,9 +246,7 @@ class SoundEngine {
   }
 
   playClick() {
-    if (!this.enabled) return;
-    this.init();
-    if (!this.ctx) return;
+    if (!this.ready() || !this.ctx) return;
 
     const osc = this.ctx.createOscillator();
     const gain = this.ctx.createGain();

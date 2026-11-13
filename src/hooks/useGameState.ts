@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
+import { whenRealmShown } from "@/utils/loadingScreen";
 import { DeveloperKingdom, RepoBuilding, RealmStatus, CivilizationType, FlatWorldMapData, AuthUser, UpgradeDef, MapNPC, NethergardeSpire, ActiveMarch, BattleReport, PopulationLedgerEntry, MarchPreview, CivSwapProposal, ScoutReport, MarchKind, NodeStatus, Rally, BossStatus, NpcKingdomStatus, AdminValidationWarning, IgnoredRepoRecord, Broadcast, DevEmail, MusterMarch, MusterResult } from "@/types";
 import { BATTLE_SHOWCASE_MS } from "@/utils/war";
 import { BATTLE_ROUND_MS } from "@/utils/civDemographics";
@@ -8,6 +9,7 @@ import { useDialog } from "@/components/ui/Dialog";
 import { API_BASE } from "@/config";
 import { setRealmTime } from "@/utils/realmTime";
 import { setRealmDisaster } from "@/utils/disasters";
+import { setRealmHorrors } from "@/utils/horror";
 import { setOnlineIds } from "@/utils/presence";
 
 export type ViewMode = 'world_map' | 'city_view';
@@ -80,6 +82,21 @@ function persistReadNoticeIds(ids: Set<number>) {
   }
 }
 
+/**
+ * The realm's data answered 401: the session is gone (signed out in another tab, or expired) and the server doesn't
+ * let guests browse. Back to the login screen, as signing out does. True when it did.
+ */
+let leaving = false;
+function sessionLost(res: Response): boolean {
+  if (res.status !== 401) return false;
+  if (!leaving) {
+    leaving = true;
+    setGuest(false);
+    window.location.reload();
+  }
+  return true;
+}
+
 /** Battle reports kept for the War Room list */
 const BATTLE_REPORT_HISTORY = 40;
 
@@ -91,6 +108,7 @@ export function useGameState() {
   const [worldMap, setWorldMap] = useState<FlatWorldMapData | null>(null);
   // Roving encounters live apart from the map so they can change without rebuilding the continent
   const [rovingNPCs, setRovingNPCs] = useState<MapNPC[]>([]);
+  const [horrorNPCs, setHorrorNPCs] = useState<MapNPC[]>([]);
   // Resource nodes / chests someone touched: what's left, who gathers them
   const [nodeStatuses, setNodeStatuses] = useState<Record<string, NodeStatus>>({});
   // World bosses (shared HP, weekly rotation) and NPC kingdoms (fogged)
@@ -166,17 +184,25 @@ export function useGameState() {
   }, [currentKingdomId, viewMode]);
 
   const fetchKingdom = useCallback(async (id: string) => {
-    const switching = currentIdRef.current !== id;
+    const prev = currentIdRef.current;
+    const switching = prev !== id;
+    // The kingdom asked for last wins: refreshes follow it at once, and a slower answer for an earlier pick is dropped
+    currentIdRef.current = id;
     if (switching) setSwitchingKingdomId(id);
+    // A switch that fails leaves the kingdom shown where it was
+    const giveUp = () => {
+      if (switching && currentIdRef.current === id) currentIdRef.current = prev;
+    };
     try {
       const res = await fetch(`${API_BASE}/kingdoms/${encodeURIComponent(id)}`);
-      if (!res.ok) return;
+      if (!res.ok) return giveUp();
       const text = await res.text();
-      currentIdRef.current = id;
+      if (currentIdRef.current !== id) return;
       if (text === kingdomJsonRef.current) return;
       kingdomJsonRef.current = text;
       setCurrentKingdom(JSON.parse(text) as DeveloperKingdom);
     } catch (err) {
+      giveUp();
       console.error("Failed to fetch kingdom:", err);
     } finally {
       if (switching) setSwitchingKingdomId((cur) => (cur === id ? null : cur));
@@ -203,10 +229,11 @@ export function useGameState() {
       const text = await res.text();
       if (text === rovingJsonRef.current) return;
       rovingJsonRef.current = text;
-      const data: { key: string; npcs: MapNPC[]; nodes?: Record<string, NodeStatus>; bosses?: Record<string, BossStatus>; npcKingdoms?: Record<string, NpcKingdomStatus> } =
+      const data: { key: string; npcs: MapNPC[]; horrors?: MapNPC[]; nodes?: Record<string, NodeStatus>; bosses?: Record<string, BossStatus>; npcKingdoms?: Record<string, NpcKingdomStatus> } =
         JSON.parse(text);
       rovingKeyRef.current = data.key;
       setRovingNPCs(data.npcs);
+      setHorrorNPCs(data.horrors ?? []);
       setNodeStatuses(data.nodes ?? {});
       setBossStatuses(data.bosses ?? {});
       setNpcKingdomStatuses(data.npcKingdoms ?? {});
@@ -257,8 +284,10 @@ export function useGameState() {
   const fetchKingdoms = useCallback(async (): Promise<DeveloperKingdom[]> => {
     try {
       const res = await fetch(`${API_BASE}/kingdoms`);
+      if (sessionLost(res) || !res.ok) return kingdomsRef.current;
       const text = await res.text();
       const data: DeveloperKingdom[] = text === kingdomsJsonRef.current ? kingdomsRef.current : JSON.parse(text);
+      if (!Array.isArray(data)) return kingdomsRef.current;
       if (text !== kingdomsJsonRef.current) {
         kingdomsJsonRef.current = text;
         kingdomsRef.current = data;
@@ -343,7 +372,8 @@ export function useGameState() {
       const march = marchesRef.current.find((m) => m.id === relevant.marchId);
       const delay = march ? Math.max(0, march.arrivalTime + BATTLE_SHOWCASE_MS - Date.now()) : 0;
       if (reportTimerRef.current) clearTimeout(reportTimerRef.current);
-      reportTimerRef.current = setTimeout(() => {
+      // ...and never while the loading screen is up (the report and its sound wait for the realm to show)
+      reportTimerRef.current = setTimeout(() => whenRealmShown("battle-report", () => {
         openBattleReport(relevant);
         // The viewer's own march (leader or rally member) was repelled: alert in the Chronicle
         const mine = relevant.armies?.filter((a) => a.side === "attacker" && a.ownerId === myId) ?? [];
@@ -354,7 +384,7 @@ export function useGameState() {
           sound.playDefeat();
         } else if (relevant.attackerWon === (relevant.attackerId === myId)) sound.playLevelUp();
         else sound.playClick();
-      }, delay);
+      }), delay);
     } catch (err) {
       console.error("Failed to fetch battle reports:", err);
     }
@@ -428,7 +458,8 @@ export function useGameState() {
       const prev = noticesRef.current;
       const isNew = fresh.some((b) => !prev.some((p) => p.id === b.id));
       if (!isNew && prev.length === fresh.length) return;
-      if (isNew) sound.playHerald();
+      // The fanfare waits until the realm is on screen (the herald opens then too)
+      if (isNew) whenRealmShown("herald", () => sound.playHerald());
       noticesRef.current = fresh;
       setNotices(fresh);
     } catch (err) {
@@ -451,10 +482,12 @@ export function useGameState() {
   const fetchStatus = useCallback(async () => {
     try {
       const res = await fetch(`${API_BASE}/status`);
+      if (sessionLost(res) || !res.ok) return;
       const data: RealmStatus = await res.json();
       setStatus(data);
       setRealmTime(data.realmTime, data.serverNow);
       setRealmDisaster(data.disaster, data.serverNow);
+      setRealmHorrors(data.horrors, data.serverNow);
       setOnlineIds(data.onlineIds);
       // Next regular respawn in local time (corrected for server clock skew)
       if (data.nextRespawnAt && data.serverNow) setNextRespawnAt(data.nextRespawnAt - (data.serverNow - Date.now()));
@@ -1178,6 +1211,7 @@ export function useGameState() {
     realmShift,
     npcKingdomStatuses,
     rovingNPCs,
+    horrorNPCs,
     nodeStatuses,
     nextRespawnAt,
     viewMode,

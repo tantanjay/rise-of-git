@@ -5,7 +5,7 @@
  * Titles are cached in `user_earned_titles` and recomputed on Live Sync, after battles and when gatherers return,
  * so war ticks only read the cached rows.
  */
-import { db, isSpecialUserId, getAllKingdomsFromDB, consumeRepoHoldingsChanged } from "./db.js";
+import { db, isSpecialUserId, getAllKingdomsFromDB, consumeRepoHoldingsChanged, COMMIT_UNCLAIMED } from "./db.js";
 import { PLAY_DAY_MIN_ACTIONS } from "./kingdomUtils.js";
 import { DeveloperKingdom } from "./types.js";
 import { EarnedTitle, TitleBuffType, TitleCategory } from "./types.js";
@@ -148,8 +148,7 @@ const stmtCommitStats = db.prepare(`
   FROM commits c
   JOIN repositories r ON c.repo_id = r.id
   WHERE c.author_login = @id
-     OR c.author_email = @email
-     OR c.author_email IN (SELECT email FROM user_emails WHERE user_id = @id)
+     OR ((c.author_email = @email OR c.author_email IN (SELECT email FROM user_emails WHERE user_id = @id)) AND ${COMMIT_UNCLAIMED})
 `);
 
 const stmtGathered = db.prepare(`

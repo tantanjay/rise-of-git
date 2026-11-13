@@ -49,6 +49,10 @@ function blockedReason(k: DeveloperKingdom): string | null {
   if (getDeployedSoldiers(k.id) > 0 || countActiveMarchesForUser(k.id) > 0) {
     return `${k.name} has an army away from home; every march must return home before changing civilization.`;
   }
+  // ⚔️ A castle under siege fights as the civilization it was when the battle began: no changing sides until it ends
+  if (db.prepare(`SELECT 1 FROM battles WHERE target_type = 'dev_kingdom' AND target_id = ? AND status = 'fighting' LIMIT 1`).get(k.id)) {
+    return `${k.name} is under siege; wait until the battle at its walls is over before changing civilization.`;
+  }
   return null;
 }
 
@@ -67,7 +71,8 @@ function convertCivilization(userId: string, newCiv: CivilizationType, reason: s
     oldCiv: u.civilization,
     oldLevel: level,
     newCiv,
-    newLevel: level
+    newLevel: level,
+    peaceful: true
   });
   setCivilization(userId, newCiv);
   db.prepare(`UPDATE users SET population = ?, soldiers = ?, max_population = ?, updated_at = datetime('now') WHERE id = ?`).run(
@@ -122,6 +127,14 @@ const rowToProposal = (r: any): CivSwapProposal => ({
 /** Mark lapsed proposals as expired */
 function expireStale(now = Date.now()) {
   db.prepare(`UPDATE civ_swap_proposals SET status = 'expired', resolved_at = ? WHERE status = 'pending' AND expires_at <= ?`).run(now, now);
+  // An offer names the two civilizations it trades: once either ruler belongs to another one, it lapses
+  db.prepare(`
+    UPDATE civ_swap_proposals SET status = 'expired', resolved_at = ?
+    WHERE status = 'pending' AND (
+      from_civ IS NOT (SELECT civilization FROM users WHERE id = civ_swap_proposals.from_id) OR
+      to_civ IS NOT (SELECT civilization FROM users WHERE id = civ_swap_proposals.to_id)
+    )
+  `).run(now);
 }
 
 /** Open proposals involving a kingdom, plus its most recently settled ones */
@@ -175,6 +188,9 @@ export const answerSwap = db.transaction((proposalId: string, userId: string, ac
   expireStale();
   const row = db.prepare(`SELECT * FROM civ_swap_proposals WHERE id = ?`).get(proposalId) as any;
   if (!row) throw new Error("Swap proposal not found.");
+  if (row.status === "expired" && row.expires_at > Date.now()) {
+    throw new Error(`This offer was for ${row.from_civ} ⇄ ${row.to_civ}, and one of you has changed civilization since, so it has lapsed.`);
+  }
   if (row.status !== "pending") throw new Error(`This proposal is already ${row.status}.`);
   if (action === "cancel" ? row.from_id !== userId : row.to_id !== userId) throw new Error("This proposal isn't yours to answer.");
 
@@ -192,11 +208,12 @@ export const answerSwap = db.transaction((proposalId: string, userId: string, ac
     const blocked = blockedReason(k);
     if (blocked) throw new Error(blocked);
   }
-  if (from.civilization === to.civilization) throw new Error(`You are both ${from.civilization} now — there is nothing to swap.`);
-  if (areCivsInWarFrenzy(from.civilization, to.civilization)) {
-    throw new Error(`War Frenzy is active between ${from.civilization} and ${to.civilization} this week — peaceful swaps are suspended until Sunday 00:00 UTC.`);
+  // The trade the offer named (expireStale has already lapsed any offer whose rulers changed civilization since)
+  const [fromCiv, toCiv] = [row.from_civ as CivilizationType, row.to_civ as CivilizationType];
+  if (fromCiv === toCiv) throw new Error(`You are both ${fromCiv} now — there is nothing to swap.`);
+  if (areCivsInWarFrenzy(fromCiv, toCiv)) {
+    throw new Error(`War Frenzy is active between ${fromCiv} and ${toCiv} this week — peaceful swaps are suspended until Sunday 00:00 UTC.`);
   }
-  const [fromCiv, toCiv] = [from.civilization, to.civilization];
   convertCivilization(from.id, toCiv, `Peaceful swap with ${to.name}`);
   convertCivilization(to.id, fromCiv, `Peaceful swap with ${from.name}`);
   db.prepare(`UPDATE civ_swap_proposals SET status = 'accepted', resolved_at = ? WHERE id = ?`).run(now, proposalId);

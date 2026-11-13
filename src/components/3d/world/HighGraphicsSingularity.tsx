@@ -646,13 +646,21 @@ const DISC_ROT: [number, number, number] = [-0.88, 0, 0.15];
 export function HighGraphicsSingularity({
   action: requested,
   reflections = true,
-  screenFx = true
+  screenFx = true,
+  lights = true,
+  timeOffset = 0,
+  pace = 1
 }: {
   action: SingularityAction;
   /** Off where the view brings its own (the login flyover's HD map) */
   reflections?: boolean;
   /** The full-screen flash, speed lines, vignette and void; off while it only stands in a bigger scene (the login flyover's tour) */
   screenFx?: boolean;
+  /** Its stage lights; off on the world map, where a light would recompile and slow every material in the realm */
+  lights?: boolean;
+  /** Seconds into an action it starts at, and how fast it plays them: several on the map never move in step */
+  timeOffset?: number;
+  pace?: number;
 }) {
   useStudioReflections(0.5, reflections);
   const gl = useThree((s) => s.gl);
@@ -681,7 +689,7 @@ export function HighGraphicsSingularity({
     action: requested,
     start: 0,
     lastPhase: -1,
-    local: 0,
+    local: timeOffset,
     hitStop: 0,
     lastHit: -1
   });
@@ -979,7 +987,7 @@ export function HighGraphicsSingularity({
       });
       st.start = t;
       st.lastPhase = -1;
-      st.local = 0;
+      st.local = timeOffset;
       st.lastHit = -1;
       st.hitStop = 0;
       Object.assign(phys.fx, { quake: 0, flash: 0, lines: 0, vig: 0 });
@@ -987,7 +995,7 @@ export function HighGraphicsSingularity({
         d.active = false;
       });
     }
-    st.local += dt;
+    st.local += dt * pace;
     const localT = st.local;
     // Emerge plays once; then it idles where it came out
     const action: SingularityAction = requested === "emerging" && localT >= EMERGE_CYCLE ? "idle" : requested;
@@ -2527,9 +2535,13 @@ export function HighGraphicsSingularity({
   return (
     <group ref={rootRef} scale={0.86}>
       {/* A cold rim from behind so the black reads against the dark, a pale key, crimson from below */}
-      <directionalLight position={[-3, 7, -6]} color="#b9c4ff" intensity={1.8} />
-      <pointLight position={[2.6, 5.2, 4.2]} color="#ffe1e4" intensity={2.5} distance={14} />
-      <pointLight position={[0, 0.7, 1.4]} color="#ff3b4a" intensity={3} distance={6} />
+      {lights && (
+        <>
+          <directionalLight position={[-3, 7, -6]} color="#b9c4ff" intensity={1.8} />
+          <pointLight position={[2.6, 5.2, 4.2]} color="#ffe1e4" intensity={2.5} distance={14} />
+          <pointLight position={[0, 0.7, 1.4]} color="#ff3b4a" intensity={3} distance={6} />
+        </>
+      )}
 
       {/* Mythic aura: the curtain of light and the embers (no beam: light falls into this one) */}
       <MythicAura beams={[]} curtainRadius={4.6} curtainHeight={3.6} emberRadii={[1.8, 4.4]} emberHeight={8} embers={200} gain={auraGain} />
@@ -2543,7 +2555,7 @@ export function HighGraphicsSingularity({
       <group ref={coreVisRef} matrixAutoUpdate={false}>
         <mesh geometry={geos.horizon} material={mats.horizon} />
         <mesh ref={discRef} geometry={geos.disc} material={mats.disc} rotation={DISC_ROT} renderOrder={2} />
-        <pointLight color="#ff2a3a" intensity={5} distance={7} />
+        {lights && <pointLight color="#ff2a3a" intensity={5} distance={7} />}
       </group>
       <mesh ref={lensRef} geometry={geos.lens} material={mats.lens} renderOrder={3} />
       <mesh ref={chargeRef} geometry={geos.quad} material={mats.chargeVortex} renderOrder={4} visible={false} />

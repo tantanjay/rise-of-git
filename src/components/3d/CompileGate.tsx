@@ -2,6 +2,7 @@ import { ReactNode, useEffect, useLayoutEffect, useRef } from "react";
 import { useFrame, useThree } from "@react-three/fiber";
 import * as THREE from "three";
 import { hdSceneTarget } from "./HdPost";
+import { setLoadStage } from "@/utils/loadingScreen";
 
 /** Frames drawn after the view shows before it counts as ready (meshes uploaded, the static shadows redrawn) */
 const READY_FRAMES = 3;
@@ -51,6 +52,7 @@ export function CompileGate({ children, token, onReady }: { children: ReactNode;
     // A frame after mount, so the view's environment, fog and lights are in place and the programs match what the
     // first real render asks for (drawn into bloom's buffer in HD)
     const raf = requestAnimationFrame(() => {
+      setLoadStage("forge");
       const prev = gl.getRenderTarget();
       gl.setRenderTarget(hdSceneTarget());
       const compiled = gl.compileAsync(group, camera, scene);
@@ -58,15 +60,22 @@ export function CompileGate({ children, token, onReady }: { children: ReactNode;
       // compileAsync waits only for each material's last program: a material drawn two ways (instanced and not, a
       // second batch) has more, and any still linking would stall the first frame. Wait until every program is linked
       const started = performance.now();
-      const allLinked = () => (gl.info.programs ?? []).every((p) => (p as LinkingProgram).isReady?.() !== false);
+      // How many programs are linked: the loading screen's bar moves with it
+      const linked = () => {
+        const programs = gl.info.programs ?? [];
+        const ready = programs.filter((p) => (p as LinkingProgram).isReady?.() !== false).length;
+        setLoadStage("forge", programs.length ? ready / programs.length : 1);
+        return ready === programs.length;
+      };
       const show = () => {
         if (!alive) return;
-        if (!allLinked() && performance.now() - started < LINK_WAIT_MS) {
+        if (!linked() && performance.now() - started < LINK_WAIT_MS) {
           timer = setTimeout(show, 10);
           return;
         }
         group.visible = true;
         frames.current = READY_FRAMES;
+        setLoadStage("torches");
       };
       compiled.then(show);
     });
